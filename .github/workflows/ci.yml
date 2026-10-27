@@ -1,0 +1,50 @@
+name: Host integration
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out host
+        uses: actions/checkout@v4
+        with:
+          repository: 3yearsZhuang/Aervox-harness
+          ref: main
+          path: host
+          persist-credentials: false
+      - name: Check out collection revision
+        uses: actions/checkout@v4
+        with:
+          path: host/plugins
+          persist-credentials: false
+      - name: Bind exact collection commit for integration
+        working-directory: host
+        run: |
+          git rev-parse HEAD
+          collection_commit=$(git -C plugins rev-parse HEAD)
+          git rm -r --cached --ignore-unmatch -- plugins
+          git config --file .gitmodules submodule.plugins.path plugins
+          git config --file .gitmodules submodule.plugins.url https://github.com/Aervox-agent/Aervox-plugins.git
+          git add .gitmodules
+          git update-index --add --cacheinfo "160000,$collection_commit,plugins"
+          git submodule update --init -- packages/core reference/deepseek-harness
+          git submodule status -- packages/core plugins reference/deepseek-harness
+      - uses: jdx/mise-action@v2
+        with:
+          working_directory: host
+      - name: Validate host and collection
+        working-directory: host
+        run: ./aervox ci all
+      - name: Audit locked dependencies
+        working-directory: host
+        run: mise exec -- pnpm check:dependency-audit
