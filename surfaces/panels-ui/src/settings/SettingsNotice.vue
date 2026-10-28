@@ -1,10 +1,19 @@
 <script setup lang="ts">
+import { nextTick, ref, watch } from 'vue';
 import type { SettingsNotice } from './useSettingsNotice';
-defineProps<{ notice: SettingsNotice | null }>();
+const props = defineProps<{ notice: SettingsNotice | null }>();
+const element = ref<HTMLElement>();
+watch(() => props.notice, async notice => {
+  if (!notice) return;
+  await nextTick();
+  if (props.notice !== notice) return;
+  // The native dialog can own the scroll even when the inner pane does not.
+  element.value?.scrollIntoView({ block: 'nearest' });
+});
 </script>
 
 <template>
-  <p v-if="notice" class="settings-inline-notice" :data-kind="notice.kind" :role="notice.kind === 'success' ? 'status' : 'alert'">{{ notice.text }}</p>
+  <p v-if="notice" ref="element" class="settings-inline-notice" :data-kind="notice.kind" :role="notice.kind === 'success' ? 'status' : 'alert'">{{ notice.text }}</p>
 </template>
 
 <style scoped>
