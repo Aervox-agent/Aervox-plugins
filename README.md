@@ -1,6 +1,15 @@
 # Aervox-plugins
 
-Aervox 第一方插件集合，整体作为 [Aervox-harness](https://github.com/3yearsZhuang/Aervox-harness) 的 `plugins/` Git submodule 消费。各插件继续位于 `<id>/`，包名、公共入口、Manifest 和默认产品装配保持原有合同。
+Aervox 第一方插件与界面集合，整体作为 [Aervox-harness](https://github.com/3yearsZhuang/Aervox-harness) 的 `plugins/` Git submodule 消费。各业务插件继续位于 `<id>/`，受信根界面位于 `surfaces/<id>/`，包名、公共入口、Manifest 和默认产品装配保持原有合同。
+
+## 目录组成
+
+- 业务与适配器插件：`anki-sync/`、`bot-onebot/`、`bot-weixin/`、`diary-distillers/`、`focus-mode/`、`health-guard/`、`home-assistant/`、`multimodal-ocr/`、`xiaomi-health/`
+- 第一方 UI 根界面表面（Surfaces，遵循 [ADR-025](https://github.com/3yearsZhuang/Aervox-harness/blob/main/docs/reference/adr/ADR-025-ui-surface-hosts.md)）：
+  - `surfaces/companion-ui`: 桌面端常驻桌宠根界面 (`@aervox/plugin-companion-ui`)
+  - `surfaces/panels-ui`: 宿主设置与管理面板集合 (`@aervox/plugin-panels-ui`)
+  - `surfaces/proactive-ui`: 主动式伴学交互界面 (`@aervox/plugin-proactive-ui`)
+  - `surfaces/workbench-ui`: 默认工作台根界面 (`@aervox/plugin-workbench-ui`)
 
 ## 开发与验证
 
