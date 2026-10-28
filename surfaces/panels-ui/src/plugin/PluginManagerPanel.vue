@@ -278,7 +278,7 @@ async function handleOperation(plugin: PluginSummaryDto, command: string): Promi
             >
               <SlidersHorizontal :size="15" />管理
             </AervoxButton>
-            <ElDropdown trigger="click" placement="bottom-end" @command="command => handleOperation(plugin, command)">
+            <ElDropdown trigger="click" placement="bottom-end" :teleported="false" @command="command => handleOperation(plugin, command)">
               <AervoxButton variant="ghost" icon-only type="button" class="plugin-action plugin-more-btn" :aria-label="`更多操作：${plugin.id}`">
                 <Ellipsis :size="17" />
               </AervoxButton>
