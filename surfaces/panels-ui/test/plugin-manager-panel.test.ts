@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 import { ref } from 'vue';
+import { ElDropdown } from 'element-plus/es/components/dropdown/index.mjs';
+
+const confirmation = vi.hoisted(() => vi.fn().mockResolvedValue('confirm'));
+vi.mock('@aervox/ui/material3', async importOriginal => ({
+  ...await importOriginal<object>(), useDialogPrompts: () => ({ confirm: confirmation }),
+}));
 
 const mockPlugins = ref([
   {
@@ -39,6 +45,8 @@ const mockSetPluginEnabled = vi.fn().mockResolvedValue({ id: 'test', enabled: 1 
 const mockListSensorGrants = vi.fn().mockResolvedValue([]);
 const mockListPages = vi.fn().mockResolvedValue([]);
 const mockLoadPlugins = vi.fn().mockResolvedValue(mockPlugins.value);
+const mockDownloadData = vi.fn().mockResolvedValue(undefined);
+const mockUninstallPlugin = vi.fn().mockResolvedValue(undefined);
 
 vi.mock('@aervox/api-client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@aervox/api-client')>();
@@ -53,6 +61,8 @@ vi.mock('@aervox/api-client', async (importOriginal) => {
       listSensorGrants: mockListSensorGrants,
       listPages: mockListPages,
       getConfig: vi.fn(),
+      downloadData: mockDownloadData,
+      uninstallPlugin: mockUninstallPlugin,
     }),
   };
 });
@@ -61,6 +71,27 @@ import PluginManagerPanel from '../src/plugin/PluginManagerPanel.vue';
 import { UI_PLUGIN_CONTEXT_KEY } from '@aervox/ui/plugin-api';
 
 describe('PluginManagerPanel.vue Actions Layout & State', () => {
+  it('keeps data export and confirmed uninstall available for a disabled missing plugin', async () => {
+    const plugin = { ...mockPlugins.value[1]!, enabled: 0, availability: 'missing' };
+    mockPlugins.value[1] = plugin;
+    const wrapper = mount(PluginManagerPanel, { global: { stubs: {
+      PluginInstallDialog: true, PluginConfigDialog: true, PluginPageDialog: true,
+      PluginSettingsDialog: true, SkillManagerTab: true, McpToolsTab: true,
+    } } });
+    await flushPromises();
+    const menu = wrapper.findAllComponents(ElDropdown)[1]!;
+    menu.vm.$emit('command', 'data'); await flushPromises();
+    expect(mockDownloadData).toHaveBeenCalledWith(plugin.id);
+    confirmation.mockRejectedValueOnce('cancel');
+    menu.vm.$emit('command', 'uninstall'); await flushPromises();
+    expect(mockUninstallPlugin).not.toHaveBeenCalled();
+    menu.vm.$emit('command', 'uninstall'); await flushPromises();
+    expect(confirmation).toHaveBeenCalled();
+    expect(mockUninstallPlugin).toHaveBeenCalledWith(plugin.id);
+    expect(mockSetPluginEnabled).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
   it('provides one management entry and a more menu while preserving the enable switch', async () => {
     const refreshPluginUI = vi.fn().mockResolvedValue(undefined);
     const wrapper = mount(PluginManagerPanel, {
