@@ -6,7 +6,7 @@ permissions:
   contents: write
   actions: write
 env:
-  HOST_COMMIT: c3203ddbc9e357e6a188f35e6bbd6540f6f58df6
+  HOST_COMMIT: 29fc0e8552a88787e81d369f9adab27644c47205
 jobs:
   release:
     runs-on: ubuntu-latest
