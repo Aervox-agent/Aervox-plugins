@@ -1,0 +1,42 @@
+{
+  "apiVersion": "aervox.dev/v1",
+  "kind": "PluginManifest",
+  "requires": {
+    "hostApiVersion": {
+      "min": "1.1.0",
+      "maxExclusive": "2.0.0"
+    }
+  },
+  "metadata": {
+    "id": "ap-tool-example",
+    "displayName": "basic-tool",
+    "publisher": "example-author",
+    "version": "1.0.0",
+    "category": "tool",
+    "tags": [],
+    "breaking": false,
+    "license": "AGPL-3.0-or-later"
+  },
+  "spec": {
+    "tools": [
+      {
+        "name": "example_lookup",
+        "description": "只读查询示例；执行仍须由受信宿主注册 handler",
+        "category": "plugin",
+        "safetyLevel": "read_only",
+        "requiredPermissions": [],
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ]
+        }
+      }
+    ]
+  }
+}

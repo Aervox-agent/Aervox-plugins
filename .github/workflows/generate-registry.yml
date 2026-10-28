@@ -1,0 +1,71 @@
+name: Generate released plugin registry
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+permissions:
+  contents: write
+  actions: write
+  pull-requests: write
+concurrency:
+  group: plugin-registry-update
+  cancel-in-progress: false
+env:
+  HOST_COMMIT: c3203ddbc9e357e6a188f35e6bbd6540f6f58df6
+jobs:
+  registry:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: 3yearsZhuang/Aervox-harness
+          ref: ${{ env.HOST_COMMIT }}
+          path: host
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          path: host/plugins
+          persist-credentials: false
+      - name: Bind collection and initialize Core
+        working-directory: host
+        run: |
+          collection_commit=$(git -C plugins rev-parse HEAD)
+          git rm -r --cached --ignore-unmatch -- plugins
+          git config --file .gitmodules submodule.plugins.path plugins
+          git config --file .gitmodules submodule.plugins.url https://github.com/Aervox-agent/Aervox-plugins.git
+          git add .gitmodules
+          git update-index --add --cacheinfo "160000,$collection_commit,plugins"
+          git submodule update --init -- packages/core
+      - uses: jdx/mise-action@v2
+        with:
+          working_directory: host
+      - name: Verify published assets and generate indexes
+        working-directory: host
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mise tasks run install
+          mise tasks run native-toolchain-setup
+          mise exec -- pnpm exec turbo run build --filter=@aervox/host-runtime...
+          mise exec -- node --test plugins/scripts/ecosystem.test.mjs
+          mise exec -- node plugins/scripts/build-registry.mjs --github
+      - name: Propose registry update
+        id: registry-pr
+        uses: peter-evans/create-pull-request@v7
+        with:
+          path: host/plugins
+          token: ${{ github.token }}
+          branch: docs/refresh-plugin-registry
+          commit-message: 'docs: refresh verified plugin release registry'
+          title: 'docs: 更新已验证插件发布索引'
+          body: '从真实 GitHub Release 附件重验 SHA-256、Manifest、版本与体积后生成；索引变更仍经 PR 审查。'
+          author: 3yearsZ <WenyuanZhuang@outlook.com>
+          committer: 3yearsZ <WenyuanZhuang@outlook.com>
+          add-paths: registry/
+      - name: Validate generated PR head explicitly
+        if: steps.registry-pr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref docs/refresh-plugin-registry --field host_commit="$HOST_COMMIT"

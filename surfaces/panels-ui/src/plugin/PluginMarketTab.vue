@@ -15,13 +15,17 @@ import {
   SlidersHorizontal,
 } from 'lucide-vue-next'
 import { useAervoxPlugins, type PluginMarketItemDto } from '@aervox/api-client'
-import { ElMessage } from '@aervox/ui/utils/element'
+import { useDialogPrompts } from '@aervox/ui/material3';
+import { ElMessage, ElMessageBox } from '@aervox/ui/utils/element'
 
 const emit = defineEmits<{
   (e: 'installed'): void
 }>()
 
 const api = useAervoxPlugins()
+const dialogPrompts = useDialogPrompts(ElMessageBox)
+const categoryLabels = { tool: '工具', bot: '通信', ui: '界面', proactive: '主动智能', sync: '同步', workflow: '工作流', theme: '主题' } as const
+const selectedCategory = ref('all')
 const marketItems = ref<PluginMarketItemDto[]>([])
 const loading = ref(false)
 const searchQuery = ref('')
@@ -54,6 +58,8 @@ const filteredItems = computed(() => {
       if (!matchName && !matchId && !matchDesc) return false
     }
 
+    if (selectedCategory.value !== 'all' && item.category !== selectedCategory.value) return false
+
     // 能力分类过滤
     if (selectedFilter.value === 'proactive') {
       return item.capabilities.sensorsCount > 0 || item.capabilities.triggersCount > 0
@@ -74,7 +80,18 @@ const filteredItems = computed(() => {
 async function handleInstall(item: PluginMarketItemDto): Promise<void> {
   actionBusy.value = item.id
   try {
-    await api.installFromMarket(item.id)
+    let allowBreaking = false
+    if (item.installed && item.hasUpdate && item.breaking) {
+      try {
+        await dialogPrompts.confirm(`插件「${item.displayName || item.id}」的 ${item.version} 版本包含破坏性变化，请先核对变更记录与备份。继续升级？`, '破坏性升级确认', { type: 'warning', confirmButtonText: '继续升级', cancelButtonText: '取消' })
+      } catch { return }
+      allowBreaking = true
+    }
+    await api.installFromMarket(item.id, {
+      allowBreaking,
+      expectedVersion: item.version,
+      ...(item.sha256 ? { expectedSha256: item.sha256 } : {}),
+    })
     ElMessage.success(`插件「${item.displayName || item.id}」已成功安装`)
     await loadMarket()
     emit('installed')
@@ -105,6 +122,7 @@ const filterOptions = computed(() => [
 
 <template>
   <div class="plugin-market-tab">
+    <p v-if="api.marketRegistryError?.value" class="registry-status" role="status">{{ api.marketRegistryError.value }}</p>
     <!-- 工具栏与筛选 -->
     <div class="market-toolbar">
       <div class="search-box">
@@ -117,6 +135,12 @@ const filterOptions = computed(() => [
         />
       </div>
 
+      <label class="category-filter">主分类
+        <select v-model="selectedCategory" class="aervox-field" aria-label="插件主分类">
+          <option value="all">全部分类</option>
+          <option v-for="(label, category) in categoryLabels" :key="category" :value="category">{{ label }}</option>
+        </select>
+      </label>
       <AervoxSegmentedControl variant="tabs" v-model="selectedFilter" :options="filterOptions" label="插件集市筛选" />
 
       <AervoxButton variant="secondary" icon-only aria-label="刷新插件集市" type="button" class="btn-refresh" :disabled="loading" @click="loadMarket">
@@ -154,10 +178,11 @@ const filterOptions = computed(() => [
               <CheckCircle2 :size="11" />
               <span>已安装</span>
             </span>
-            <span v-else class="aervox-badge badge badge-available">出厂预设</span>
+            <span v-else class="aervox-badge badge badge-available">{{ item.source === 'market' ? '官方市场' : '出厂预设' }}</span>
           </div>
         </div>
 
+        <p v-if="item.installed && item.hasUpdate && item.breaking" class="breaking-notice" role="note">此更新包含破坏性变化，升级前请查看变更记录并备份。</p>
         <p class="card-desc">{{ item.description || '暂无详细描述。' }}</p>
 
         <!-- 能力标签 -->
@@ -231,6 +256,8 @@ const filterOptions = computed(() => [
 </template>
 
 <style scoped>
+.category-filter { display: flex; align-items: center; gap: 8px; }
+.breaking-notice { color: var(--avx-color-warning, #a96a16); font-size: 12px; }
 .plugin-market-tab {
   display: flex;
   flex-direction: column;
