@@ -2,6 +2,14 @@
 
 Aervox 第一方插件集合，整体作为 [Aervox-harness](https://github.com/3yearsZhuang/Aervox-harness) 的 `plugins/` Git submodule 消费。各插件继续位于 `<id>/`，包名、公共入口、Manifest 和默认产品装配保持原有合同。
 
+## 构成规范与命名标准
+
+本生态仓库严格遵守 [Aervox-plugins 构成规范与文件结构标准 (AVX-PLUG-002)](SPECIFICATION.md)：
+- **统一命名体系**：插件 ID 统一采用 `ap-<category>-<slug>`（如 `ap-tool-anki-sync`、`ap-bot-weixin`）。
+- **三维正交解耦**：Plugin ID 作为不可变持久身份（保护本地数据库外键约束），破坏性变更通过 SemVer 2.0.0 的 `MAJOR` 版本递增体现。
+- **七大标准分类**：`tool`、`bot`、`ui`、`proactive`、`sync`、`workflow`、`theme`。
+- **严格资源白名单**：分发包（`.aervox-plugin`）直铺声明资源，禁止打包 `src/`、`test/`、`node_modules/`，并使用固化 DOS 纪元时间戳保证确定性构建。
+
 ## 开发与验证
 
 本仓依赖宿主的公共包、根 TypeScript/Vitest 配置和统一锁文件，安装、构建、测试及声明包导出均在主仓根执行。它是源码集合，不是可独立安装的运行时或插件商店。
