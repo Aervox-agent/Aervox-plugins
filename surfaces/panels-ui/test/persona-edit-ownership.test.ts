@@ -23,6 +23,17 @@ const payload = (id: string) => ({expectedRevision: 1, name: id, description: id
 const mount = () => shallowMount(PersonaEditDialog, {props: {open: false, personaId: 'A'}, global: {renderStubDefaultSlot: true}});
 const save = (wrapper: ReturnType<typeof mount>) => (wrapper.vm as unknown as {save(): Promise<void>}).save();
 
+it('closes through the shared dialog model event and ignores a late closed model event', async () => {
+  const wrapper = mount(); await wrapper.setProps({open: true}); await flushPromises();
+  const dialog = wrapper.getComponent({name: 'AervoxDialog'});
+  dialog.vm.$emit('update:modelValue', false); await flushPromises();
+  expect(wrapper.emitted('close')).toEqual([[]]);
+  await wrapper.setProps({open: false});
+  dialog.vm.$emit('update:modelValue', false); await flushPromises();
+  expect(wrapper.emitted('close')).toEqual([[]]);
+  expect(api.update).not.toHaveBeenCalled(); expect(api.create).not.toHaveBeenCalled();
+});
+
 it('keeps B draft and capabilities when an older A detail arrives after B', async () => {
   const wrapper = mount(); await wrapper.setProps({open: true}); await flushPromises();
   await wrapper.setProps({open: false}); await wrapper.setProps({open: true, personaId: 'B'}); await flushPromises();
@@ -48,6 +59,7 @@ it('does not close B or notify saved when A save completes after replacement', a
   const pending = save(wrapper); await wrapper.setProps({personaId: 'B'}); await flushPromises();
   api.loads.get('B')!.resolve(detail('B')); await flushPromises(); finish({}); await pending;
   expect(wrapper.emitted('close')).toBeUndefined(); expect(wrapper.emitted('saved')).toBeUndefined();
+  expect(wrapper.emitted('notice')).toBeUndefined();
   expect(api.success).not.toHaveBeenCalled();
   await save(wrapper); expect(api.update).toHaveBeenLastCalledWith('B', payload('B'));
 });
@@ -56,6 +68,7 @@ it('ignores A read failure after closing and opening a fresh create draft', asyn
   await wrapper.setProps({open: false}); await wrapper.setProps({open: true, personaId: null}); await flushPromises();
   api.loads.get('A')!.reject(new Error('late A failure')); await flushPromises();
   expect(api.error).not.toHaveBeenCalled(); expect(wrapper.emitted('close')).toBeUndefined();
+  expect(wrapper.emitted('notice')).toBeUndefined();
 });
 it('suppresses late read and save effects after unmount', async () => {
   let fail!: (cause: Error) => void;
@@ -78,6 +91,7 @@ it('drops a pending load failure after unmount', async () => {
   const wrapper = mount(); await wrapper.setProps({open: true}); await flushPromises();
   const old = api.loads.get('A')!; wrapper.unmount(); old.reject(new Error('unmounted load')); await flushPromises();
   expect(api.error).not.toHaveBeenCalled(); expect(wrapper.emitted('close')).toBeUndefined();
+  expect(wrapper.emitted('notice')).toBeUndefined();
 });
 
 it('preserves voice settings and unavailable capabilities when editing its speaker', async () => {
