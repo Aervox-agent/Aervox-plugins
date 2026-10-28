@@ -1,6 +1,15 @@
 # Aervox-plugins
 
-Aervox 第一方插件集合，整体作为 [Aervox-harness](https://github.com/3yearsZhuang/Aervox-harness) 的 `plugins/` Git submodule 消费。各插件继续位于 `<id>/`，包名、公共入口、Manifest 和默认产品装配保持原有合同。
+Aervox 第一方插件与界面集合，整体作为 [Aervox-harness](https://github.com/3yearsZhuang/Aervox-harness) 的 `plugins/` Git submodule 消费。各业务插件继续位于 `<id>/`，受信根界面位于 `surfaces/<id>/`，包名、公共入口、Manifest 和默认产品装配保持原有合同。
+
+## 目录组成
+
+- 业务与适配器插件：`anki-sync/`、`bot-onebot/`、`bot-weixin/`、`diary-distillers/`、`focus-mode/`、`health-guard/`、`home-assistant/`、`multimodal-ocr/`、`xiaomi-health/`
+- 第一方 UI 根界面表面（Surfaces，遵循 [ADR-025](https://github.com/3yearsZhuang/Aervox-harness/blob/main/docs/reference/adr/ADR-025-ui-surface-hosts.md)）：
+  - `surfaces/companion-ui`: 桌面端常驻桌宠根界面 (`@aervox/plugin-companion-ui`)
+  - `surfaces/panels-ui`: 宿主设置与管理面板集合 (`@aervox/plugin-panels-ui`)
+  - `surfaces/proactive-ui`: 主动式伴学交互界面 (`@aervox/plugin-proactive-ui`)
+  - `surfaces/workbench-ui`: 默认工作台根界面 (`@aervox/plugin-workbench-ui`)
 
 ## 开发与验证
 
@@ -11,7 +20,7 @@ git clone https://github.com/3yearsZhuang/Aervox-harness.git
 cd Aervox-harness
 mise tasks run install
 git -C plugins switch -c feat/my-plugin-change
-mise exec -- pnpm exec turbo run build typecheck test --filter='./plugins/*'
+mise exec -- pnpm exec turbo run build typecheck test --filter='./plugins/*' --filter='./plugins/surfaces/*'
 mise tasks run package-plugins
 ```
 
@@ -19,7 +28,7 @@ mise tasks run package-plugins
 
 接口与数据责任由主仓的 [ADR-016](https://github.com/3yearsZhuang/Aervox-harness/blob/main/docs/reference/adr/ADR-016-base-boundaries.md)、[插件规范](https://github.com/3yearsZhuang/Aervox-harness/blob/main/docs/reference/plugin-config-and-pages.md)和 [host-plugin-api](https://github.com/3yearsZhuang/Aervox-harness/tree/main/packages/host-plugin-api) 定义。学习事实、仓储、复习排期和组合根保留在主仓；`focus-mode` 继续进入默认产品，Bot 适配器仍按现有生命周期装配。`.aervox-plugin` 继续只分发声明和允许资源。
 
-集合 CI 将本仓精确提交装入固定的公开宿主基线，冻结安装后执行宿主全量门禁；结果记录宿主和集合的精确提交，不等于发布或真实平台验收。升级宿主基线经 PR 修改 CI 中的固定 SHA；手动验证兼容分支时可通过 `host_commit` 输入完整的公开宿主提交 SHA。
+集合 CI 将本仓精确提交装入固定的公开宿主基线，冻结安装后确认本仓每个源码包均进入宿主工作区及对应构建、类型检查和测试任务，再执行宿主全量门禁；结果记录宿主和集合的精确提交，不等于发布或真实平台验收。升级宿主基线经 PR 修改 CI 中的固定 SHA；手动验证兼容分支时可通过 `host_commit` 输入完整的公开宿主提交 SHA。遗漏 `plugins/surfaces/*` 等目录的旧宿主会明确失败。
 
 ## 来源与许可
 
