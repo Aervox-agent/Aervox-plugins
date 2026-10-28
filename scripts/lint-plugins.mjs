@@ -55,6 +55,12 @@ export async function lintPlugins({ root = collectionRoot, base } = {}) {
       }
       if (ids.has(id)) throw new Error(`Duplicate identity: ${id}`);
       ids.add(id);
+      for (const tool of manifest.spec.tools ?? []) if (!/^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/.test(tool.name)) {
+        throw new Error(`${id}: tool names require lowercase snake_case`);
+      }
+      for (const page of manifest.spec.pages ?? []) if (!/^[a-z0-9_-]+$/.test(page.id)) {
+        throw new Error(`${id}: new ecosystem Page IDs must be lowercase`);
+      }
       if (!contracts.parsePluginReleaseTag(contracts.pluginReleaseTag(id, version))) throw new Error(`${id}: invalid release version`);
       for (const file of ['README.md', 'LICENSE', 'CHANGELOG.md']) {
         const stat = await fs.lstat(path.join(directory, file));
@@ -64,6 +70,17 @@ export async function lintPlugins({ root = collectionRoot, base } = {}) {
       if (!tests.some(file => /\.test\.[cm]?[jt]s$/.test(file))) throw new Error(`${id}: source tests required`);
       if (contracts.comparePluginVersions(manifest.requires?.hostApiVersion.min ?? '1.0.0', '1.1.0') === -1) throw new Error(`${id}: ecosystem releases require Host API >=1.1.0`);
       const snapshot = await releaseSnapshot(directory, manifest);
+      const nestedKeys = field => {
+        if (field.children) checkKeys(field.children);
+        if (field.items) nestedKeys(field.items);
+      };
+      const checkKeys = fields => {
+        for (const field of fields) {
+          if (!/^[a-z][A-Za-z0-9]*$/.test(field.key)) throw new Error(`${id}: Config keys require camelCase`);
+          nestedKeys(field);
+        }
+      };
+      checkKeys(snapshot.config?.fields ?? []);
       const changelog = await fs.readFile(path.join(directory, 'CHANGELOG.md'), 'utf8');
       if (manifest.metadata.breaking) assertBreakingNote(id, version, changelog);
       let history;

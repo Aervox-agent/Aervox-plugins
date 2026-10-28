@@ -124,6 +124,32 @@ test('source standard rejects a directory/category/identity mismatch', async t =
   await assert.rejects(lintPlugins({ root }), /directory, category and identity/);
 });
 
+test('author naming rules reject legacy-readable Page, tool and nested Config names', async t => {
+  const cases = [
+    { kind: 'tool', expected: /snake_case/ },
+    { kind: 'page', expected: /Page IDs must be lowercase/ },
+    { kind: 'config', expected: /camelCase/ },
+  ];
+  for (const entry of cases) await t.test(entry.kind, async subtest => {
+    const root = await temporary(subtest);
+    const directory = path.join(root, 'plugins/tool/example');
+    await fs.mkdir(path.join(directory, 'test'), { recursive: true });
+    const value = manifest();
+    if (entry.kind === 'tool') value.spec.tools = [{ name: 'Not_Snake', inputSchema: { type: 'object' } }];
+    if (entry.kind === 'page') value.spec.pages = [{ id: 'Dashboard', title: 'Dashboard', entry: 'pages/Dashboard/index.html' }];
+    if (entry.kind === 'config') value.spec.config = { schemaVersion: 1, entry: 'config.schema.json' };
+    for (const [name, contents] of Object.entries({ 'plugin.manifest.json': JSON.stringify(value),
+      'README.md': '# Fixture', 'LICENSE': 'AGPL-3.0-or-later', 'CHANGELOG.md': '## 1.0.0', 'test/manifest.test.mjs': '/* fixture */' })) {
+      await fs.writeFile(path.join(directory, name), contents);
+    }
+    if (entry.kind === 'config') await fs.writeFile(path.join(directory, 'config.schema.json'), JSON.stringify({
+      apiVersion: 'aervox.dev/v1', kind: 'PluginConfigSchema', schemaVersion: 1,
+      fields: [{ key: 'items', type: 'array', label: 'Items', items: { key: 'item', type: 'object', label: 'Item', children: [{ key: 'snake_key', type: 'string', label: 'Value' }] } }],
+    }));
+    await assert.rejects(lintPlugins({ root }), entry.expected);
+  });
+});
+
 test('shared packer omits source and rejects unknown files and linked distribution resources', async t => {
   const root = await temporary(t);
   const output = path.join(root, 'output');

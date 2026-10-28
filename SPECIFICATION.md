@@ -52,7 +52,7 @@ Git Tag 为 `<plugin-id>@v<version>`；Release 资产为 `<plugin-id>-v<version>
 
 Tool `name` 使用 `<slug>_<action>`，全局名称须唯一；宿主对工具 **ID** 自动加 `<plugin-id>.` 命名空间，并不自动重命名 `name`。实际 handler 和执行权限由宿主注册并校验。
 
-默认 Skill 名称为 pluginId，辅助技能使用 `<plugin-id>:<sub-skill>`。逻辑名称与磁盘目录分开，共享编码函数将冒号编码为 `%3A`，避免 Windows 路径问题；Manifest 命名空间必须匹配归属插件。Page ID 推荐小写 kebab/snake，运行时仍兼容历史大小写；入口位于对应 `pages/<page-id>/`。Config Key 使用 camelCase。
+默认 Skill 名称为 pluginId，辅助技能使用 `<plugin-id>:<sub-skill>`。逻辑名称与磁盘目录分开，共享编码函数将冒号编码为 `%3A`，避免 Windows 路径问题；Manifest 命名空间必须匹配归属插件。新生态 Page ID 使用小写 kebab/snake，作者门禁检查；运行时仍兼容历史大小写，入口位于对应 `pages/<page-id>/`。Config Key 使用 camelCase，工具使用小写 snake_case，均执行作者命名检查。
 
 ## 3. 文件组织与分发
 
