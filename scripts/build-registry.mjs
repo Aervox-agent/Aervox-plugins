@@ -79,7 +79,7 @@ export async function buildRegistry({ root = collectionRoot, releases = [] } = {
       if (!comparison.validVersionBump || comparison.issues.length) throw new Error(`${id}: invalid published transition ${comparison.issues.join('; ')}`);
       if (comparison.breaking && !next.breaking) throw new Error(`${id}: published structural breaking change must declare breaking=true`);
     }
-    const latest = history.versions.find(entry => !entry.version.includes('-')) ?? history.versions[0];
+    const latest = history.versions.find(entry => !entry.version.split('+', 1)[0].includes('-')) ?? history.versions[0];
     if (!latest) continue;
     const { metadata, spec } = latest.manifest;
     plugins.push({ id, displayName: metadata.displayName, category: metadata.category,

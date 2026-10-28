@@ -124,6 +124,19 @@ test('source standard rejects a directory/category/identity mismatch', async t =
   await assert.rejects(lintPlugins({ root }), /directory, category and identity/);
 });
 
+test('stable release selection ignores hyphens inside SemVer build metadata', async t => {
+  const root = await temporary(t);
+  const versions = [];
+  for (const version of ['1.0.0+build-1', '1.1.0-rc.1']) {
+    const value = manifest();
+    value.metadata.version = version;
+    const fixture = releaseFixture(value);
+    versions.push(await verifyReleaseAssets(fixture.release, fixture.bytes, fixture.text));
+  }
+  const catalog = await buildRegistry({ root, releases: versions });
+  assert.equal(catalog.plugins[0].latestVersion, '1.0.0+build-1');
+});
+
 test('author naming rules reject legacy-readable Page, tool and nested Config names', async t => {
   const cases = [
     { kind: 'tool', expected: /snake_case/ },
