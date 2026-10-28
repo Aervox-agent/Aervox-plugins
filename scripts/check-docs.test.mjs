@@ -42,8 +42,8 @@ test('complete document examples pass the actual consuming host bundle validator
 
 test('host validation rejects unsupported metadata, unsafe Skill names and config defaults', async t => {
   const cases = [
-    { name: 'unsupported metadata', mutate: manifest => { manifest.metadata.category = 'tool'; }, code: 'MANIFEST_UNKNOWN' },
-    { name: 'colon Skill', mutate: manifest => { manifest.spec.skills = [{ name: 'example:skill', content: 'Instructions' }]; }, code: 'SKILL_NAME' },
+    { name: 'unsupported metadata', mutate: manifest => { manifest.metadata.unknownField = 'tool'; }, code: 'MANIFEST_UNKNOWN' },
+    { name: 'unsafe Skill', mutate: manifest => { manifest.spec.skills = [{ name: '../skill', content: 'Instructions' }]; }, code: 'SKILL_NAME' },
     { name: 'invalid config default', mutate: (_manifest, config) => { config.fields[0].default = 42; }, code: 'CONFIG_DEFAULT' },
   ];
   for (const entry of cases) {
@@ -56,16 +56,16 @@ test('host validation rejects unsupported metadata, unsafe Skill names and confi
 
 test('resources outside the host allowlist fail even when embedded in a marked document', async t => {
   const { root, put, check } = fixture(t);
-  put('SPECIFICATION.md', readFileSync(path.join(root, 'SPECIFICATION.md'), 'utf8') + '\n' + resource('icon.svg', '<svg/>', 'svg'));
-  assert.ok((await check()).issues.some(problem => problem.code === 'BUNDLE_ENTRY' && problem.message.includes('icon.svg')));
+  put('SPECIFICATION.md', readFileSync(path.join(root, 'SPECIFICATION.md'), 'utf8') + '\n' + resource('unsupported.exe', '<svg/>', 'svg'));
+  assert.ok((await check()).issues.some(problem => problem.code === 'BUNDLE_ENTRY' && problem.message.includes('unsupported.exe')));
 });
 
 test('complete unmarked manifest/config JSON is still host validated and cannot evade the example gate', async t => {
-  const { root, put, check } = fixture(t, manifest => { manifest.metadata.category = 'tool'; });
+  const { root, put, check } = fixture(t, manifest => { manifest.metadata.unknownField = 'tool'; });
   put('SPECIFICATION.md', readFileSync(path.join(root, 'SPECIFICATION.md'), 'utf8').replace(/<!-- aervox-bundle-file: [^>]+ -->/g, ''));
   const report = await check();
   assert.equal(report.issues.filter(problem => problem.code === 'EXAMPLE_MARKER').length, 2);
-  assert.ok(report.issues.some(problem => problem.code === 'MANIFEST_UNKNOWN' && problem.message.includes('metadata.category')));
+  assert.ok(report.issues.some(problem => problem.code === 'MANIFEST_UNKNOWN' && problem.message.includes('metadata.unknownField')));
 });
 
 test('malformed JSON, missing examples and unclosed fences fail visibly', async t => {

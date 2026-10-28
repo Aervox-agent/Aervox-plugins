@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 env:
-  HOST_COMMIT: ${{ inputs.host_commit || 'c3203ddbc9e357e6a188f35e6bbd6540f6f58df6' }}
+  HOST_COMMIT: ${{ inputs.host_commit || '29fc0e8552a88787e81d369f9adab27644c47205' }}
 
 jobs:
   integration:
@@ -76,6 +76,20 @@ jobs:
           mise exec -- pnpm --filter @aervox/contracts build
           mise exec -- node --test plugins/scripts/check-docs.test.mjs
           mise exec -- node plugins/scripts/check-docs.mjs
+      - name: Validate ecosystem standard and release tooling
+        working-directory: host
+        env:
+          COLLECTION_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          mise exec -- pnpm exec turbo run build --filter=@aervox/host-runtime...
+          mise exec -- node --test plugins/scripts/ecosystem.test.mjs
+          mise exec -- node --test plugins/plugins/*/*/test/*.test.mjs
+          if [ -n "$COLLECTION_BASE" ]; then
+            git -C plugins fetch origin "$COLLECTION_BASE"
+            mise exec -- node plugins/scripts/lint-plugins.mjs --base "$COLLECTION_BASE"
+          else
+            mise exec -- node plugins/scripts/lint-plugins.mjs
+          fi
       - name: Validate host and collection
         working-directory: host
         run: ./aervox ci all

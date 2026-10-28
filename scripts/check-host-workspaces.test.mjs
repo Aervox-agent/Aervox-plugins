@@ -24,7 +24,7 @@ function fixture(t, oldLayout = false) {
     tasks: { build: {}, typecheck: {}, test: {} },
   }));
   writeFileSync(path.join(hostRoot, 'pnpm-workspace.yaml'),
-    `packages:\n  - 'plugins/*'\n  - '${oldLayout ? 'surfaces/*' : 'plugins/surfaces/*'}'\n`);
+    `packages:\n  - 'plugins/plugins/*/*'\n  - '${oldLayout ? 'surfaces/*' : 'plugins/surfaces/*'}'\n`);
   symlinkSync(path.join(installedHost, 'node_modules'), path.join(hostRoot, 'node_modules'), 'dir');
   const importers = ['.'];
   const writePackage = (directory, name) => {
@@ -35,7 +35,7 @@ function fixture(t, oldLayout = false) {
     }));
     importers.push(directory);
   };
-  for (const name of pluginNames) writePackage(`plugins/${name}`, name);
+  for (const name of pluginNames) writePackage(`plugins/plugins/${name.startsWith('bot-') ? 'bot' : 'ui'}/${name}`, name);
   for (const name of surfaceNames) {
     writePackage(`plugins/surfaces/${name}`, name);
     // The old host still has packages with the same names at its original paths.
@@ -72,7 +72,7 @@ test('a real Turbo dry run filtered to direct plugins fails coverage of nested U
     'list', '--recursive', '--depth', '-1', '--json',
   ], { cwd: hostRoot, encoding: 'utf8' }));
   const graph = JSON.parse(execFileSync(path.join(hostRoot, 'node_modules', '.bin', 'turbo'), [
-    'run', 'build', 'typecheck', 'test', '--filter=./plugins/*', '--dry=json',
+    'run', 'build', 'typecheck', 'test', '--filter=./plugins/plugins/*/*', '--dry=json',
   ], { cwd: hostRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
   assert.equal(inventory.filter(pkg => pkg.name?.startsWith('@aervox/')).length, 7);
   assert.throws(() => assertHostCoverage(readCollectionPackages(collectionRoot), inventory, graph, hostRoot),

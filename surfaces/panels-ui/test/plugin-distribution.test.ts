@@ -1,11 +1,13 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { mount, flushPromises } from '@vue/test-utils';
 import { defineComponent, h, ref } from 'vue';
+import { ElMessageBox } from '@aervox/ui/utils/element';
 import type { PluginMarketItemDto, PluginPackageInspectionDto } from '@aervox/api-client';
 
 const mockMarketItems: PluginMarketItemDto[] = [
   {
     id: 'focus-mode',
+    category: 'ui',
     displayName: '深度专注伴侣',
     publisher: 'aervox-official',
     version: '1.2.0',
@@ -26,6 +28,7 @@ const mockMarketItems: PluginMarketItemDto[] = [
   },
   {
     id: 'weather-radar',
+    category: 'tool',
     displayName: '实时天气雷达',
     publisher: 'community',
     version: '0.9.0',
@@ -47,6 +50,7 @@ const mockMarketItems: PluginMarketItemDto[] = [
 ];
 
 const mockListMarket = vi.fn().mockResolvedValue(mockMarketItems);
+const mockMarketRegistryError = ref<string | null>(null);
 const mockInstallFromMarket = vi.fn().mockResolvedValue({ id: 'weather-radar', enabled: 1 });
 const mockInspectPackage = vi.fn();
 const mockInstallPackage = vi.fn().mockResolvedValue({ id: 'weather-radar', enabled: 1 });
@@ -61,6 +65,7 @@ vi.mock('@aervox/api-client', async (importOriginal) => {
       loading: ref(false),
       error: ref(null),
       listMarket: mockListMarket,
+      marketRegistryError: mockMarketRegistryError,
       installFromMarket: mockInstallFromMarket,
       inspectPackage: mockInspectPackage,
       installPackage: mockInstallPackage,
@@ -106,9 +111,54 @@ import PluginSettingsDialog from '../src/plugin/PluginSettingsDialog.vue';
 describe('Plugin Distribution (CAP-020)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockMarketRegistryError.value = null;
   });
 
   describe('PluginMarketTab.vue', () => {
+    it('keeps local market entries available while showing the remote registry failure', async () => {
+      mockMarketRegistryError.value = '官方索引暂时不可用，仍可使用出厂插件';
+      const wrapper = mount(PluginMarketTab);
+      await flushPromises();
+      expect(wrapper.find('[role="status"]').text()).toContain('官方索引暂时不可用');
+      expect(wrapper.findAll('.market-card')).toHaveLength(2);
+      expect(wrapper.findAll('button').some(button => button.text().includes('一键安装'))).toBe(true);
+      wrapper.unmount();
+    });
+    it('filters the market by ecosystem primary category', async () => {
+      const wrapper = mount(PluginMarketTab);
+      await flushPromises();
+      await wrapper.find('select[aria-label="插件主分类"]').setValue('tool');
+      expect(wrapper.text()).toContain('实时天气雷达');
+      expect(wrapper.text()).not.toContain('深度专注伴侣');
+      wrapper.unmount();
+    });
+
+    it('requires confirmation and explicit approval when upgrading a breaking version', async () => {
+      mockListMarket.mockResolvedValueOnce([{ ...mockMarketItems[0], source: 'market', hasUpdate: true, breaking: true, version: '2.0.0', sha256: 'a'.repeat(64) }]);
+      const confirmation = vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm');
+      const wrapper = mount(PluginMarketTab);
+      await flushPromises();
+      expect(wrapper.find('[role="note"]').text()).toContain('破坏性');
+      await wrapper.findAll('button').find(button => button.text() === '升级')!.trigger('click');
+      await flushPromises();
+      expect(confirmation).toHaveBeenCalled();
+      expect(mockInstallFromMarket).toHaveBeenCalledWith('focus-mode', { allowBreaking: true, expectedVersion: '2.0.0', expectedSha256: 'a'.repeat(64) });
+      wrapper.unmount();
+      confirmation.mockRestore();
+    });
+
+    it('cancelling a breaking upgrade does not call the installation API', async () => {
+      mockListMarket.mockResolvedValueOnce([{ ...mockMarketItems[0], hasUpdate: true, breaking: true, version: '2.0.0' }]);
+      const confirmation = vi.spyOn(ElMessageBox, 'confirm').mockRejectedValue('cancel');
+      const wrapper = mount(PluginMarketTab);
+      await flushPromises();
+      await wrapper.findAll('button').find(button => button.text() === '升级')!.trigger('click');
+      await flushPromises();
+      expect(mockInstallFromMarket).not.toHaveBeenCalled();
+      wrapper.unmount();
+      confirmation.mockRestore();
+    });
+
     it('renders market item cards and displays capability badges', async () => {
       const wrapper = mount(PluginMarketTab);
       await flushPromises();
@@ -162,7 +212,7 @@ describe('Plugin Distribution (CAP-020)', () => {
       await installBtn!.trigger('click');
       await flushPromises();
 
-      expect(mockInstallFromMarket).toHaveBeenCalledWith('weather-radar');
+      expect(mockInstallFromMarket).toHaveBeenCalledWith('weather-radar', { allowBreaking: false, expectedVersion: '0.9.0' });
       expect(wrapper.emitted('installed')).toBeTruthy();
     });
 

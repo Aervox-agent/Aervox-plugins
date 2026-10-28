@@ -1,0 +1,77 @@
+name: Release one plugin
+on:
+  push:
+    tags: ['ap-*@v*']
+permissions:
+  contents: write
+  actions: write
+env:
+  HOST_COMMIT: 29fc0e8552a88787e81d369f9adab27644c47205
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: 3yearsZhuang/Aervox-harness
+          ref: ${{ env.HOST_COMMIT }}
+          path: host
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          path: host/plugins
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Require reviewed main ancestry
+        working-directory: host/plugins
+        env:
+          COLLECTION_COMMIT: ${{ github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$COLLECTION_COMMIT"
+          git fetch origin refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$COLLECTION_COMMIT" origin/main
+      - name: Bind candidate collection
+        working-directory: host
+        run: |
+          collection_commit=$(git -C plugins rev-parse HEAD)
+          git rm -r --cached --ignore-unmatch -- plugins
+          git config --file .gitmodules submodule.plugins.path plugins
+          git config --file .gitmodules submodule.plugins.url https://github.com/Aervox-agent/Aervox-plugins.git
+          git add .gitmodules
+          git update-index --add --cacheinfo "160000,$collection_commit,plugins"
+          git submodule update --init -- packages/core
+      - uses: jdx/mise-action@v2
+        with:
+          working_directory: host
+      - name: Frozen host installation and contract build
+        working-directory: host
+        run: |
+          mise tasks run install
+          mise exec -- pnpm --filter @aervox/contracts build
+      - name: Standard and reproducibility gate
+        working-directory: host
+        run: mise exec -- node plugins/scripts/lint-plugins.mjs
+      - name: Build tagged asset and checksum
+        working-directory: host
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: mise exec -- node plugins/scripts/pack-plugin.mjs --tag "$RELEASE_TAG" --output "$RUNNER_TEMP/plugin-release"
+      - name: Publish immutable release assets
+        working-directory: host/plugins
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          COLLECTION_COMMIT: ${{ github.sha }}
+        run: |
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo '::error::Release already exists; immutable version cannot be overwritten'
+            exit 1
+          fi
+          prerelease=()
+          if [[ "$RELEASE_TAG" =~ @v[0-9]+\.[0-9]+\.[0-9]+- ]]; then prerelease=(--prerelease); fi
+          gh release create "$RELEASE_TAG" "$RUNNER_TEMP"/plugin-release/* --repo "$GITHUB_REPOSITORY" --target "$COLLECTION_COMMIT" --title "$RELEASE_TAG" --generate-notes "${prerelease[@]}"
+      - name: Request verified registry update
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run generate-registry.yml --repo "$GITHUB_REPOSITORY"
