@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 env:
-  HOST_COMMIT: ${{ inputs.host_commit || '21400c8af89ae7fa2b5b9d796d8450f117d76ac7' }}
+  HOST_COMMIT: ${{ inputs.host_commit || 'c3203ddbc9e357e6a188f35e6bbd6540f6f58df6' }}
 
 jobs:
   integration:
@@ -61,9 +61,21 @@ jobs:
       - name: Install frozen host dependencies
         working-directory: host
         run: mise tasks run install
+      - name: Verify collection workspace and task coverage
+        working-directory: host
+        run: |
+          mise exec -- node --test plugins/scripts/check-host-workspaces.test.mjs
+          mise exec -- node plugins/scripts/check-host-workspaces.mjs
       - name: Install pinned native check components
         working-directory: host
         run: mise tasks run native-toolchain-setup
+      - name: Validate collection documentation
+        working-directory: host
+        run: |
+          mise exec -- markdownlint-cli2 --config .markdownlint-cli2.jsonc 'plugins/README.md' 'plugins/SPECIFICATION.md'
+          mise exec -- pnpm --filter @aervox/contracts build
+          mise exec -- node --test plugins/scripts/check-docs.test.mjs
+          mise exec -- node plugins/scripts/check-docs.mjs
       - name: Validate host and collection
         working-directory: host
         run: ./aervox ci all
