@@ -6,20 +6,34 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      host_commit:
+        description: Exact public host commit SHA for compatibility validation
+        required: false
+        type: string
 
 permissions:
   contents: read
+
+env:
+  HOST_COMMIT: ${{ inputs.host_commit || 'c6094603fdf30a532fa05c00e017d31f56af1d1d' }}
 
 jobs:
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
+      - name: Validate pinned host commit
+        run: |
+          if ! [[ "$HOST_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::host_commit must be a full commit SHA"
+            exit 1
+          fi
       - name: Check out host
         uses: actions/checkout@v4
         with:
           repository: 3yearsZhuang/Aervox-harness
-          ref: main
+          ref: ${{ env.HOST_COMMIT }}
           path: host
           persist-credentials: false
       - name: Check out collection revision
@@ -30,8 +44,10 @@ jobs:
       - name: Bind exact collection commit for integration
         working-directory: host
         run: |
-          git rev-parse HEAD
+          test "$(git rev-parse HEAD)" = "$HOST_COMMIT"
+          echo "Host commit: $HOST_COMMIT"
           collection_commit=$(git -C plugins rev-parse HEAD)
+          echo "Collection commit: $collection_commit"
           git rm -r --cached --ignore-unmatch -- plugins
           git config --file .gitmodules submodule.plugins.path plugins
           git config --file .gitmodules submodule.plugins.url https://github.com/Aervox-agent/Aervox-plugins.git
@@ -42,6 +58,12 @@ jobs:
       - uses: jdx/mise-action@v2
         with:
           working_directory: host
+      - name: Install frozen host dependencies
+        working-directory: host
+        run: mise tasks run install
+      - name: Install pinned native check components
+        working-directory: host
+        run: mise tasks run native-toolchain-setup
       - name: Validate host and collection
         working-directory: host
         run: ./aervox ci all

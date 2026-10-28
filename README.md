@@ -19,8 +19,8 @@ mise tasks run package-plugins
 
 接口与数据责任由主仓的 [ADR-016](https://github.com/3yearsZhuang/Aervox-harness/blob/main/docs/reference/adr/ADR-016-base-boundaries.md)、[插件规范](https://github.com/3yearsZhuang/Aervox-harness/blob/main/docs/reference/plugin-config-and-pages.md)和 [host-plugin-api](https://github.com/3yearsZhuang/Aervox-harness/tree/main/packages/host-plugin-api) 定义。学习事实、仓储、复习排期和组合根保留在主仓；`focus-mode` 继续进入默认产品，Bot 适配器仍按现有生命周期装配。`.aervox-plugin` 继续只分发声明和允许资源。
 
-集合 CI 将本仓精确提交装入公开宿主主线，冻结安装后执行宿主全量门禁；结果记录实际使用的宿主提交，不等于发布或真实平台验收。
+集合 CI 将本仓精确提交装入固定的公开宿主基线，冻结安装后执行宿主全量门禁；结果记录宿主和集合的精确提交，不等于发布或真实平台验收。升级宿主基线经 PR 修改 CI 中的固定 SHA；手动验证兼容分支时可通过 `host_commit` 输入完整的公开宿主提交 SHA。
 
 ## 来源与许可
 
-插件目录及提交历史从 Aervox-harness 的 `plugins/` 提取，保留原作者与提交记录。源码继续采用 [AGPL-3.0-or-later](LICENSE)，本说明采用 [CC BY-NC-SA 4.0](LICENSE.docs)。具体文件已有的许可声明继续有效。
+插件目录及提交历史从 Aervox-harness 的 `plugins/` 提取，冻结输入为 [`119dbf2067337153724830094fc304e096bfdf28`](https://github.com/3yearsZhuang/Aervox-harness/tree/119dbf2067337153724830094fc304e096bfdf28/plugins)，保留该路径的原作者与提交记录；更早跨目录移动的历史仍可从原仓追溯。源码继续采用 [AGPL-3.0-or-later](LICENSE)，本说明采用 [CC BY-NC-SA 4.0](LICENSE.docs)。具体文件已有的许可声明继续有效。
