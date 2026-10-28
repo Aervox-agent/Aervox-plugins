@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { AervoxCard, AervoxSwitch, AervoxSettingsHeading, AervoxButton, AervoxSegmentedControl } from '@aervox/ui/primitives';
-import {computed, onMounted, ref, watch} from 'vue'
+import {computed, onBeforeUnmount, onMounted, ref, watch} from 'vue'
 import {Puzzle, Ellipsis, LayoutGrid, Zap, Wrench, PackagePlus, Radar, SlidersHorizontal, ShoppingBag, Download} from 'lucide-vue-next'
 import {ElDropdown, ElDropdownMenu, ElDropdownItem} from 'element-plus/es/components/dropdown/index.mjs'
 import {useAervoxPlugins, type PluginGrantDto, type PluginPageDto, type PluginSummaryDto} from '@aervox/api-client'
 import {PLUGIN_SENSOR_PERMISSION} from '@aervox/contracts'
 import {useUIPluginContext} from '@aervox/ui/plugin-api'
 import {ElMessage} from '@aervox/ui/utils/element'
+import {useDialogPrompts} from '@aervox/ui/material3'
+import {useSettingsNotice} from '../settings/useSettingsNotice'
+import SettingsNotice from '../settings/SettingsNotice.vue'
 import {usePluginPageOpening} from './use-plugin-page-opening'
 import PluginConfigDialog from './PluginConfigDialog.vue'
 import PluginInstallDialog from './PluginInstallDialog.vue'
@@ -39,6 +42,10 @@ try {
 const api = useAervoxPlugins()
 const {plugins, loading, error, setPluginEnabled, listPages} = api
 const uiSyncError = ref<string | null>(null)
+const prompts = useDialogPrompts()
+const {notice, notify, clearNotice} = useSettingsNotice(ElMessage)
+let disposed = false
+onBeforeUnmount(() => { disposed = true })
 
 // CR-032：感知源授权——插件声明的 sensors 需在扩展中心显式授权（未授权时内核切断事件输入）
 interface DeclaredSensor {
@@ -97,7 +104,7 @@ const settingsTarget = ref<PluginSummaryDto | null>(null)
 const settingsOpen = ref(false)
 const {targetPlugin: pageTarget, open: pageOpen, targetPage: pageTargetPage, busy: pageBusy,
   select: selectPage, refresh: refreshPage, close: closePage} = usePluginPageOpening({
-  api, onError: message => ElMessage.error(message),
+  api, onError: message => notify.error(message),
 })
 watch(currentTab, closePage)
 const installOpen = ref(false)
@@ -191,12 +198,31 @@ function openConfigFromPage(): void {
 }
 
 const exportBusy = ref<string | null>(null)
-async function handleExport(plugin: PluginSummaryDto): Promise<void> {
+async function handleOperation(plugin: PluginSummaryDto, command: string): Promise<void> {
+  if (exportBusy.value || !['export', 'data', 'uninstall'].includes(command)) return
+  clearNotice()
   exportBusy.value = plugin.id
   try {
-    await api.downloadPackage(plugin.id)
+    if (command === 'uninstall') {
+      try {
+        await prompts.confirm(`卸载“${plugin.id}”将删除它保存的配置、数据与凭据。需要保留的普通数据请先导出。`, '卸载插件与数据',
+          { type: 'warning', confirmButtonText: '卸载并删除数据', cancelButtonText: '保留' })
+      } catch { return }
+      if (disposed) return
+      await api.uninstallPlugin(plugin.id)
+      if (disposed) return
+      closePage()
+      if (settingsTarget.value?.id === plugin.id) settingsOpen.value = false
+      if (configTarget.value?.id === plugin.id) configOpen.value = false
+      emit('change')
+      await pluginContext?.refreshPluginUI()
+    } else if (command === 'data') {
+      await api.downloadData(plugin.id)
+    } else {
+      await api.downloadPackage(plugin.id)
+    }
   } catch (e) {
-    console.error('导出分发包失败', e)
+    if (!disposed) notify.error(e instanceof Error ? e.message : '插件操作失败，请重试。')
   } finally {
     exportBusy.value = null
   }
@@ -205,6 +231,7 @@ async function handleExport(plugin: PluginSummaryDto): Promise<void> {
 
 <template>
   <div class="plugin-manager">
+    <SettingsNotice :notice="notice" />
     <AervoxSettingsHeading title="扩展与插件" description="管理插件、技能包 (Skills) 与 MCP 工具端点" />
 
     <!-- 二级导航切换 Tab -->
@@ -256,7 +283,7 @@ async function handleExport(plugin: PluginSummaryDto): Promise<void> {
             >
               <SlidersHorizontal :size="15" />管理
             </AervoxButton>
-            <ElDropdown trigger="click" placement="bottom-end" @command="handleExport(plugin)">
+            <ElDropdown trigger="click" placement="bottom-end" :teleported="false" @command="command => handleOperation(plugin, command)">
               <AervoxButton variant="ghost" icon-only type="button" class="plugin-action plugin-more-btn" :aria-label="`更多操作：${plugin.id}`">
                 <Ellipsis :size="17" />
               </AervoxButton>
@@ -265,6 +292,10 @@ async function handleExport(plugin: PluginSummaryDto): Promise<void> {
                   <ElDropdownItem command="export" :disabled="exportBusy === plugin.id">
                     <Download :size="15" />{{ exportBusy === plugin.id ? '正在导出…' : '导出分发包' }}
                   </ElDropdownItem>
+                  <ElDropdownItem command="data" :disabled="exportBusy !== null">
+                    <Download :size="15" />导出已保存数据
+                  </ElDropdownItem>
+                  <ElDropdownItem command="uninstall" :disabled="exportBusy !== null">卸载插件与数据</ElDropdownItem>
                 </ElDropdownMenu>
               </template>
             </ElDropdown>
