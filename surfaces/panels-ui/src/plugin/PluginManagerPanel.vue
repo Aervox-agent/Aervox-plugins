@@ -8,6 +8,8 @@ import {PLUGIN_SENSOR_PERMISSION} from '@aervox/contracts'
 import {useUIPluginContext} from '@aervox/ui/plugin-api'
 import {ElMessage} from '@aervox/ui/utils/element'
 import {useDialogPrompts} from '@aervox/ui/material3'
+import {useSettingsNotice} from '../settings/useSettingsNotice'
+import SettingsNotice from '../settings/SettingsNotice.vue'
 import {usePluginPageOpening} from './use-plugin-page-opening'
 import PluginConfigDialog from './PluginConfigDialog.vue'
 import PluginInstallDialog from './PluginInstallDialog.vue'
@@ -41,6 +43,7 @@ const api = useAervoxPlugins()
 const {plugins, loading, error, setPluginEnabled, listPages} = api
 const uiSyncError = ref<string | null>(null)
 const prompts = useDialogPrompts()
+const {notice, notify, clearNotice} = useSettingsNotice(ElMessage)
 let disposed = false
 onBeforeUnmount(() => { disposed = true })
 
@@ -101,7 +104,7 @@ const settingsTarget = ref<PluginSummaryDto | null>(null)
 const settingsOpen = ref(false)
 const {targetPlugin: pageTarget, open: pageOpen, targetPage: pageTargetPage, busy: pageBusy,
   select: selectPage, refresh: refreshPage, close: closePage} = usePluginPageOpening({
-  api, onError: message => ElMessage.error(message),
+  api, onError: message => notify.error(message),
 })
 watch(currentTab, closePage)
 const installOpen = ref(false)
@@ -197,6 +200,7 @@ function openConfigFromPage(): void {
 const exportBusy = ref<string | null>(null)
 async function handleOperation(plugin: PluginSummaryDto, command: string): Promise<void> {
   if (exportBusy.value || !['export', 'data', 'uninstall'].includes(command)) return
+  clearNotice()
   exportBusy.value = plugin.id
   try {
     if (command === 'uninstall') {
@@ -218,7 +222,7 @@ async function handleOperation(plugin: PluginSummaryDto, command: string): Promi
       await api.downloadPackage(plugin.id)
     }
   } catch (e) {
-    if (!disposed) ElMessage.error(e instanceof Error ? e.message : '插件操作失败，请重试。')
+    if (!disposed) notify.error(e instanceof Error ? e.message : '插件操作失败，请重试。')
   } finally {
     exportBusy.value = null
   }
@@ -227,6 +231,7 @@ async function handleOperation(plugin: PluginSummaryDto, command: string): Promi
 
 <template>
   <div class="plugin-manager">
+    <SettingsNotice :notice="notice" />
     <AervoxSettingsHeading title="扩展与插件" description="管理插件、技能包 (Skills) 与 MCP 工具端点" />
 
     <!-- 二级导航切换 Tab -->
