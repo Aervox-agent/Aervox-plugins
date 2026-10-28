@@ -11,6 +11,10 @@ Aervox 第一方插件与界面集合，整体作为 [Aervox-harness](https://gi
   - `surfaces/proactive-ui`: 主动式伴学交互界面 (`@aervox/plugin-proactive-ui`)
   - `surfaces/workbench-ui`: 默认工作台根界面 (`@aervox/plugin-workbench-ui`)
 
+## 构成规范与命名标准
+
+[集合构成与开发规范 (AVX-PLUG-002)](SPECIFICATION.md) 说明当前源码组织、声明包资源和宿主内验证方式。保留现有插件 ID、包名及目录；运行时字段、权限和数据责任继续以宿主契约为准。规范分别标明机器校验、作者规则与未交付能力，文档示例使用宿主共享校验器验证。
+
 ## 开发与验证
 
 本仓依赖宿主的公共包、根 TypeScript/Vitest 配置和统一锁文件，安装、构建、测试及声明包导出均在主仓根执行。它是源码集合，不是可独立安装的运行时或插件商店。
@@ -24,11 +28,20 @@ mise exec -- pnpm exec turbo run build typecheck test --filter='./plugins/*' --f
 mise tasks run package-plugins
 ```
 
+修改本说明或规范时，在宿主根检查排版、示例和本地链接：
+
+```bash
+mise exec -- markdownlint-cli2 --config .markdownlint-cli2.jsonc 'plugins/README.md' 'plugins/SPECIFICATION.md'
+mise exec -- pnpm --filter @aervox/contracts build
+mise exec -- node --test plugins/scripts/check-docs.test.mjs
+mise exec -- node plugins/scripts/check-docs.mjs
+```
+
 插件源码 PR 先在本仓审查；主仓 PR 再更新固定 gitlink，验证宿主消费者与默认产品。未合并源码可在主仓 `plugins/` 检出并暂存对应 gitlink 后运行验证，不向主仓复制实现。主仓安装始终使用根依赖和锁文件，不在本仓或单个插件内重复安装。
 
 接口与数据责任由主仓的 [ADR-016](https://github.com/3yearsZhuang/Aervox-harness/blob/main/docs/reference/adr/ADR-016-base-boundaries.md)、[插件规范](https://github.com/3yearsZhuang/Aervox-harness/blob/main/docs/reference/plugin-config-and-pages.md)和 [host-plugin-api](https://github.com/3yearsZhuang/Aervox-harness/tree/main/packages/host-plugin-api) 定义。学习事实、仓储、复习排期和组合根保留在主仓；`focus-mode` 继续进入默认产品，Bot 适配器仍按现有生命周期装配。`.aervox-plugin` 继续只分发声明和允许资源。
 
-集合 CI 将本仓精确提交装入固定的公开宿主基线，冻结安装后确认本仓每个源码包均进入宿主工作区及对应构建、类型检查和测试任务，再执行宿主全量门禁；结果记录宿主和集合的精确提交，不等于发布或真实平台验收。升级宿主基线经 PR 修改 CI 中的固定 SHA；手动验证兼容分支时可通过 `host_commit` 输入完整的公开宿主提交 SHA。遗漏 `plugins/surfaces/*` 等目录的旧宿主会明确失败。
+集合 CI 将本仓精确提交装入固定的公开宿主基线，冻结安装后确认本仓每个源码包均进入宿主工作区及对应构建、类型检查和测试任务，检查文档排版、示例和本地链接，再执行宿主全量门禁；结果记录宿主和集合的精确提交，不等于发布或真实平台验收。升级宿主基线经 PR 修改 CI 中的固定 SHA；手动验证兼容分支时可通过 `host_commit` 输入完整的公开宿主提交 SHA。遗漏 `plugins/surfaces/*` 等目录的旧宿主会明确失败。
 
 ## 来源与许可
 

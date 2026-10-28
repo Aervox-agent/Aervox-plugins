@@ -69,6 +69,13 @@ jobs:
       - name: Install pinned native check components
         working-directory: host
         run: mise tasks run native-toolchain-setup
+      - name: Validate collection documentation
+        working-directory: host
+        run: |
+          mise exec -- markdownlint-cli2 --config .markdownlint-cli2.jsonc 'plugins/README.md' 'plugins/SPECIFICATION.md'
+          mise exec -- pnpm --filter @aervox/contracts build
+          mise exec -- node --test plugins/scripts/check-docs.test.mjs
+          mise exec -- node plugins/scripts/check-docs.mjs
       - name: Validate host and collection
         working-directory: host
         run: ./aervox ci all
