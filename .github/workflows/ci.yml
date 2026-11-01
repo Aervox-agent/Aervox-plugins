@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 env:
-  HOST_COMMIT: ${{ inputs.host_commit || 'a59ece9ec369e54cc43256f759ac3f1788e85f9e' }}
+  HOST_COMMIT: ${{ inputs.host_commit || 'f869743756fe9b738a3c519a7a17e33b7c71a242' }}
 
 jobs:
   integration:
