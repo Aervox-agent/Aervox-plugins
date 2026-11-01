@@ -44,6 +44,7 @@ const pluginLoadError = ref(false);
 const material3 = useMaterial3();
 const mobileBack = useMobileBackNavigation();
 const mobileScreen = ref<HTMLElement>();
+const mobileFeedbackRegion = ref<HTMLElement>();
 // The Android composition root registers the official Material Web elements.
 // Other hosts keep their existing native controls and visual language.
 const buttonTag = (materialTag: string) => material3 ? materialTag : 'button';
@@ -546,7 +547,7 @@ onBeforeUnmount(() => {
     ref="mobileScreen"
     :tabindex="material3 ? -1 : undefined"
     class="proactive-companion"
-    :class="{ 'pc-viewport--short': viewportHeight !== undefined && viewportHeight < 500 }"
+    :class="{ 'pc-viewport--short': viewportHeight !== undefined && viewportHeight < 500, 'pc-has-feedback': material3 && !!turnFeedback }"
     :data-platform="surface.platform"
     :data-design-system="material3 ? 'material3' : undefined"
     :style="{ '--pc-viewport-height': viewportHeight === undefined ? undefined : `${viewportHeight}px`, '--pc-viewport-top': `${viewportTop}px` }"
@@ -581,6 +582,7 @@ onBeforeUnmount(() => {
           <span class="pc-dialogue-ctx">{{ dialogueCtx }}</span>
         </div>
       </div>
+      <Teleport :to="mobileFeedbackRegion" :disabled="!material3 || !mobileFeedbackRegion">
       <div v-if="turnFeedback" class="pc-feedback" :data-kind="turnFeedback.kind" role="status">
         <span>{{ turnFeedback.message }}</span>
         <component :is="buttonTag('md-text-button')"
@@ -599,6 +601,7 @@ onBeforeUnmount(() => {
         <component :is="buttonTag('md-text-button')" v-else-if="conversationState.status === 'observer-error' && conversationState.retryAvailable" type="button" class="pc-resume pc-feedback-action" :disabled="sending" @click="retryTurn"><RotateCcw :slot="material3 ? 'icon' : undefined" :size="material3 ? 18 : 14" aria-hidden="true" />恢复接收回复</component>
         <component :is="buttonTag('md-text-button')" v-else-if="turnFeedback.kind === 'cancel-error' && sending" type="button" class="pc-retry pc-feedback-action" :disabled="stopping" @click="stopTurn">重试停止</component>
       </div>
+      </Teleport>
     </section>
 
     <section v-if="conversationState.question" class="pc-interaction" aria-label="回答问题">
@@ -629,6 +632,8 @@ onBeforeUnmount(() => {
     <p v-if="pluginLoadError" class="pc-mobile-session-feedback" role="alert">扩展加载失败。<button type="button" @click="refreshPluginUI().catch(() => undefined)">重试加载</button></p>
     </main>
 
+    <!-- Keep the same feedback and actions outside the phone's scrolling stage. -->
+    <div v-if="material3" ref="mobileFeedbackRegion" class="pc-mobile-feedback" />
     <p v-if="preparingSession || sessionChanging" class="pc-mobile-preparing" role="status">正在准备新对话，草稿会保留…</p>
     <p v-if="material3 && sessionFeedback" class="pc-mobile-session-feedback" role="alert">{{ sessionFeedback }}</p>
     <nav v-if="material3" class="pc-mobile-actions" aria-label="移动端操作">
@@ -1038,7 +1043,7 @@ onBeforeUnmount(() => {
 .proactive-companion[data-design-system="material3"] .pc-choice-reason { margin-top: 4px; font-size: 12px; line-height: 18px; letter-spacing: .25px; color: var(--md-sys-color-on-surface-variant); }
 .proactive-companion[data-design-system="material3"] .pc-choice--primary .pc-choice-reason { color: var(--md-sys-color-on-primary-container); }
 .proactive-companion[data-design-system="material3"] .pc-feedback {
-  gap: 4px 12px; margin-top: 12px; padding: 12px 16px; border-radius: 16px;
+  gap: 4px 12px; margin: 8px 0; padding: 12px 16px; border-radius: 16px;
   color: var(--md-sys-color-on-surface-variant); background: var(--md-sys-color-surface-container-high);
   font-size: 14px; line-height: 20px;
 }
@@ -1086,6 +1091,10 @@ onBeforeUnmount(() => {
 .proactive-companion[data-design-system="material3"] > .pc-header,
 .proactive-companion[data-design-system="material3"] > .pc-whisper { flex: 0 0 auto; }
 .proactive-companion[data-design-system="material3"] > .pc-content { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.pc-mobile-feedback {
+  display: grid; flex: 0 0 auto; min-width: 0;
+  margin-inline: max(16px, env(safe-area-inset-left, 0px)) max(16px, env(safe-area-inset-right, 0px));
+}
 .pc-mobile-preparing { flex: 0 0 auto; margin: 8px 16px; color: var(--md-sys-color-on-surface-variant); font-size: 14px; line-height: 20px; }
 .pc-current-session { flex: 0 0 auto; margin: -4px 24px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--md-sys-color-on-surface-variant); font-size: 14px; line-height: 20px; }
 .pc-mobile-actions { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 8px; padding: 0 16px; background: var(--md-sys-color-surface); }
@@ -1093,4 +1102,6 @@ onBeforeUnmount(() => {
 .pc-mobile-actions > md-icon-button { width: 48px; height: 48px; }
 .pc-mobile-session-feedback { flex: 0 0 auto; margin: 8px 16px; font-size: 14px; line-height: 20px; color: var(--md-sys-color-error); }
 .proactive-companion[data-design-system="material3"] .pc-whisper-input textarea { grid-column: 1; grid-row: 2; width: 100%; min-width: 0; min-height: 32px; max-height: 120px; border: 0; padding: 0; resize: none; outline: none; background: transparent; color: var(--md-sys-color-on-surface); font: inherit; font-size: 16px; line-height: 24px; overflow-y: auto; }
+/* Keep feedback, its action and the editable draft available together above an IME. */
+.proactive-companion[data-design-system="material3"].pc-viewport--short.pc-has-feedback .pc-whisper-input textarea { max-height: 32px; }
 </style>
