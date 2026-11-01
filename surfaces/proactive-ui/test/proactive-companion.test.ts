@@ -176,6 +176,8 @@ it('reuses the idempotency key on an explicit retry when turn acceptance is unkn
   await flushPromises();
   expect(focus.attributes('disabled')).toBeUndefined();
   expect(wrapper.find('.pc-feedback').text()).toContain('未能收到回复');
+  expect(wrapper.get('.pc-feedback').element.closest('.pc-dialogue')).not.toBeNull();
+  expect(wrapper.find('.pc-mobile-feedback').exists()).toBe(false);
   expect(wrapper.find('.pc-dialogue-text').text()).not.toContain('connection lost');
   await wrapper.find('.pc-retry').trigger('click');
   await flushPromises();
@@ -614,6 +616,9 @@ it('opens model settings after a definite native refusal and lets the preserved 
   await wrapper.get('.pc-whisper-input md-filled-button').trigger('click'); await flushPromises();
   const firstKey = streamTurn.mock.calls[0]![3].idempotencyKey;
   expect(wrapper.get('.pc-feedback').text()).toContain('请先配置模型服务。消息尚未发送，草稿已保留。');
+  expect(wrapper.findAll('.pc-feedback')).toHaveLength(1);
+  expect(wrapper.get('.pc-mobile-feedback .pc-configure-model').exists()).toBe(true);
+  expect(wrapper.get('.pc-feedback').element.closest('.pc-content')).toBeNull();
   expect(wrapper.text()).not.toContain('private native diagnostic');
   expect(wrapper.find('.pc-retry').exists()).toBe(false);
   expect(wrapper.getComponent(MobileSessionsDialog).props('switchLocked')).toBe(false);
