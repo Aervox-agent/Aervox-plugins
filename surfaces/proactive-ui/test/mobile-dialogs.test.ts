@@ -98,6 +98,73 @@ describe('mobile session panel intent wiring', () => {
   });
 });
 
+describe('mobile session management panel', () => {
+  it('validates and emits a trimmed rename without mutating the displayed list', async () => {
+    const wrapper = mount(MobileSessionsDialog, { props: { modelValue: true, sessions: savedSessions, activeSessionId: 'ses_sql' }, global });
+    await button(wrapper, '管理「旅行安排」').trigger('click');
+    const input = wrapper.get('#mobile-session-title-ses_trip');
+    expect((input.element as HTMLInputElement).value).toBe('旅行安排');
+    await input.setValue('   ');
+    await button(wrapper, '保存名称').trigger('click');
+    expect(wrapper.get('[role="alert"]').text()).toContain('名称不能为空');
+    expect(wrapper.emitted('rename')).toBeUndefined();
+    await input.setValue(`  ${'长'.repeat(201)}  `);
+    await button(wrapper, '保存名称').trigger('click');
+    expect(wrapper.get('[role="alert"]').text()).toContain('名称最多 200 个字符');
+    expect(wrapper.emitted('rename')).toBeUndefined();
+    await input.setValue('  旅行计划  ');
+    await button(wrapper, '保存名称').trigger('click');
+    expect(wrapper.emitted('rename')).toEqual([['ses_trip', '旅行计划']]);
+    // The panel never renames optimistically; the acknowledged title comes from the host.
+    expect(wrapper.text()).toContain('旅行安排');
+    expect(wrapper.find('#mobile-session-title-ses_trip').exists()).toBe(false);
+    expect(request).not.toHaveBeenCalled();
+  });
+  it('requires an explicit confirmation before emitting a deletion', async () => {
+    const wrapper = mount(MobileSessionsDialog, { props: { modelValue: true, sessions: savedSessions, activeSessionId: 'ses_sql' }, global });
+    await button(wrapper, '管理「旅行安排」').trigger('click');
+    await button(wrapper, '删除「旅行安排」').trigger('click');
+    expect(wrapper.emitted('delete')).toBeUndefined();
+    expect(wrapper.get('[role="alert"]').text()).toContain('删除后无法恢复');
+    expect(wrapper.findAll('.mobile-session-list li')).toHaveLength(2);
+    await button(wrapper, '取消删除').trigger('click');
+    expect(wrapper.emitted('delete')).toBeUndefined();
+    expect(wrapper.text()).not.toContain('删除后无法恢复');
+    await button(wrapper, '删除「旅行安排」').trigger('click');
+    await button(wrapper, '确认删除「旅行安排」').trigger('click');
+    expect(wrapper.emitted('delete')).toEqual([['ses_trip']]);
+    expect(wrapper.findAll('.mobile-session-list li')).toHaveLength(2);
+    expect(request).not.toHaveBeenCalled();
+  });
+  it('blocks deleting the executing session while keeping other rows manageable', async () => {
+    const wrapper = mount(MobileSessionsDialog, { props: {
+      modelValue: true, sessions: savedSessions, activeSessionId: 'ses_sql', switchLocked: true, lockReason: '回复尚未结束',
+    }, global });
+    await button(wrapper, '管理「SQLite 整理」').trigger('click');
+    expect(button(wrapper, '删除「SQLite 整理」').attributes('disabled')).toBeDefined();
+    expect(wrapper.text()).toContain('请先停止再删除');
+    await button(wrapper, '删除「SQLite 整理」').trigger('click');
+    expect(wrapper.emitted('delete')).toBeUndefined();
+    await button(wrapper, '管理「SQLite 整理」').trigger('click');
+    await button(wrapper, '管理「旅行安排」').trigger('click');
+    expect(button(wrapper, '删除「旅行安排」').attributes('disabled')).toBeUndefined();
+    expect(wrapper.text()).not.toContain('请先停止再删除');
+    expect(wrapper.emitted('delete')).toBeUndefined();
+  });
+  it('closes the editor on panel close and keeps controls disabled while the host mutates', async () => {
+    const wrapper = mount(MobileSessionsDialog, { props: { modelValue: true, sessions: savedSessions, activeSessionId: 'ses_sql' }, global });
+    await button(wrapper, '管理「旅行安排」').trigger('click');
+    await button(wrapper, '关闭面板').trigger('click');
+    expect(wrapper.emitted('update:modelValue')).toEqual([[false]]);
+    await wrapper.setProps({ modelValue: false });
+    await wrapper.setProps({ modelValue: true });
+    expect(wrapper.find('#mobile-session-title-ses_trip').exists()).toBe(false);
+    await wrapper.setProps({ managing: true, manageError: '改名没有成功，名称保持不变。可以重试。' });
+    expect(button(wrapper, '管理「旅行安排」').attributes('disabled')).toBeDefined();
+    expect(wrapper.get('[role="alert"]').text()).toContain('名称保持不变');
+  });
+});
+
 describe('mobile read-only history panel', () => {
   it('reads the explicitly inspected session, renders saved versions and withholds bodies before DOM rendering', async () => {
     const page = savedPage('ses_inspected', '**保存的回复**');

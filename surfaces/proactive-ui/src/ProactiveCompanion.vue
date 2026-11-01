@@ -15,7 +15,7 @@ import { ExtensionSlot } from '@aervox/ui/primitives';
 import { AervoxBrandMark, PetWithFallback, UserQuestionComposer, readCompanionIdentity, useSessionDraft } from '@aervox/ui/companion';
 import { AervoxHttpError, createConversationController, getClientTransport, useAervoxApi, useAervoxPlugins, useAervoxSessions } from '@aervox/api-client';
 import { createUIRegistry, provideUIRegistry, createWorkbenchPluginRuntime, createPluginEventBus, createPluginStateStore, provideUIPluginContext, resolveOutgoingMessage, type BuiltinUIPlugin, type UIPluginContext } from '@aervox/ui/plugin-api';
-import { ArrowUpRight, History, MessagesSquare, MessageSquare, RotateCcw, Settings, Square, X } from 'lucide-vue-next';
+import { ArrowUpRight, Copy, History, MessagesSquare, MessageSquare, RotateCcw, Settings, Square, X } from 'lucide-vue-next';
 import type { AskUserQuestionAnswerItem } from '@aervox/contracts';
 import { useDialogueTyper } from './dialogue-typer';
 import MobileSettingsDialog from './MobileSettingsDialog.vue';
@@ -59,6 +59,10 @@ const preparingSession = ref(false);
 const sessionFeedback = ref('');
 const sessionCreationError = ref('');
 const sessionListError = ref<string | null>(null);
+const sessionManaging = ref(false);
+const sessionManageError = ref<string | null>(null);
+// A stale management failure should not greet the next opening of the list.
+watch(sessionsOpen, open => { if (open) sessionManageError.value = null; });
 const mobileSessionTitle = computed(() => sessions.activeSession.value?.title ?? (!sessionsReady.value ? '正在读取会话…' : sessionListError.value ? '会话读取失败' : sessions.activeSessionId.value && sessions.activeSessionId.value !== 'web_default' ? '当前会话不可用' : '新对话'));
 
 /* ---------- 对话盒 ---------- */
@@ -92,6 +96,27 @@ function relativeDay(iso: string): string {
 const sending = ref(false);
 const stopping = ref(false);
 const waitingForReply = ref(false);
+/** Device work is announced by tool name only; arguments can contain user text. */
+const toolActivity = ref('');
+const copyFeedback = ref('');
+let copyTimer: ReturnType<typeof setTimeout> | undefined;
+/** Copies only the text already shown, so a partial answer cannot be mistaken for a full one. */
+async function copyReply() {
+  const text = dialogueText.value;
+  if (!text.trim() || dialogueTyping.value) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    copyFeedback.value = '已复制这次回复。';
+  } catch {
+    copyFeedback.value = '这台设备不允许直接复制，可以长按回复文字选择。';
+  }
+  clearTimeout(copyTimer);
+  copyTimer = setTimeout(() => { copyFeedback.value = ''; }, 4000);
+}
+const DEVICE_TOOL_LABELS: Record<string, string> = {
+  device_tap: '正在点击屏幕…', device_swipe: '正在滑动屏幕…', device_key: '正在按键…',
+  device_text: '正在输入文字…', device_launch_app: '正在打开应用…', device_info: '正在读取设备信息…',
+};
 const turnFeedback = ref<{ kind: 'connection-error' | 'observer-error' | 'turn-error' | 'cancel-error' | 'stopped' | 'completed'; message: string; action?: 'configure-model' }>();
 interface FailedTurn {
   content: string;
@@ -136,6 +161,7 @@ const interactionBusy = ref(false);
 let stopPreparing = false;
 let hasTurnReply = false;
 const sessionSwitchLocked = computed(() => sending.value || stopping.value || interactionBusy.value || sessionChanging.value
+  || sessionManaging.value
   || ['submitting', 'observing', 'awaiting-input', 'awaiting-approval', 'observer-error'].includes(conversationState.value.status)
   || conversationState.value.retryAvailable === true);
 const switchLockReason = computed(() => conversationState.value.retryAvailable && !conversationState.value.turnId
@@ -187,13 +213,19 @@ function dialogueCallbacks(previousContext: string, preserveReply = false) {
     },
     onDone() {
       if (surface.signal.aborted) return;
-      finish(); waitingForReply.value = false;
+      finish(); waitingForReply.value = false; toolActivity.value = '';
       dialogueCtx.value = turnController.state.question ? '等待你的回答' : turnController.state.approval ? '等待工具授权' : receivedReply ? companionName.value + ' · 刚刚回复' : previousContext;
       turnFeedback.value = receivedReply || turnController.state.question || turnController.state.approval ? undefined : {kind: 'completed', message: '本次回复已完成。'};
     },
     onError(error: unknown) { throw error; },
     onUserQuestion() { finish(); waitingForReply.value = false; dialogueCtx.value = '等待你的回答'; },
     onToolApproval() { finish(); waitingForReply.value = false; dialogueCtx.value = '等待工具授权'; },
+    onEvent(event: { eventType?: string; data?: unknown }) {
+      const name = (event.data as { name?: unknown } | undefined)?.name;
+      if (event.eventType === 'tool_request' && typeof name === 'string' && DEVICE_TOOL_LABELS[name]) {
+        toolActivity.value = DEVICE_TOOL_LABELS[name]!;
+      } else if (event.eventType === 'tool_result') toolActivity.value = '';
+    },
     onPluginEvent(eventType: string, data: unknown) { pluginEvents.emit(eventType, data); },
   };
 }
@@ -471,7 +503,7 @@ function openMobileHistory(id = sessions.activeSessionId.value, title = sessions
 }
 function resetMobilePresentation() {
   turnController.reset(); failedTurn.value = undefined; turnFeedback.value = undefined;
-  hasTurnReply = false; waitingForReply.value = false; sessionFeedback.value = ''; whisperOpen.value = false;
+  hasTurnReply = false; waitingForReply.value = false; sessionFeedback.value = ''; whisperOpen.value = false; toolActivity.value = '';
 }
 function selectMobileSession(id: string) {
   if (sessionSwitchLocked.value || !sessions.sessions.value.some(item => item.id === id)) return;
@@ -496,6 +528,70 @@ async function createMobileSession() {
     say('新的对话准备好了。想聊什么，直接告诉我。', '新对话');
   } catch { sessionCreationError.value = '新对话没有创建成功，草稿已保留。可以再次点击“新对话”。'; }
   finally { sessionChanging.value = false; }
+}
+
+/* ---------- 会话管理（改名 / 删除） ---------- */
+/** Map a definite host rejection to an action the user can take; never claim success. */
+function sessionFailure(error: unknown, fallback: string): string {
+  if (error instanceof AervoxHttpError) {
+    if (error.status === 409 && error.code === 'STOP_REPLY_BEFORE_DELETING') return '当前会话仍在回答或等待交互，请先停止再删除。';
+    if (error.status === 404) return '该会话已不存在，列表已刷新。';
+    if (error.status === 400) return '名称不合法，标题需为 1–200 个字符。';
+  }
+  return fallback;
+}
+async function renameMobileSession(id: string, title: string) {
+  if (sessionManaging.value) return;
+  if (!sessions.sessions.value.some(item => item.id === id)) return;
+  sessionManaging.value = true; sessionManageError.value = null; sessionFeedback.value = ''; sessionCreationError.value = '';
+  try {
+    const updated = await sessions.renameSession(id, { title });
+    if (surface.signal.aborted) return;
+    if (!updated) throw new Error('SESSION_NOT_FOUND');
+    // The list already holds the acknowledged title; the notice only reports it.
+    sessionFeedback.value = `已改名为「${updated.title}」。`;
+  } catch (error) {
+    if (surface.signal.aborted) return;
+    sessionManageError.value = sessionFailure(error, '改名没有成功，名称保持不变。可以重试。');
+    if (error instanceof AervoxHttpError && error.status === 404) await refreshMobileSessions();
+  } finally { sessionManaging.value = false; }
+}
+async function deleteMobileSession(id: string) {
+  if (sessionManaging.value) return;
+  const target = sessions.sessions.value.find(item => item.id === id);
+  if (!target) return;
+  const wasActive = id === sessions.activeSessionId.value;
+  // A running or awaiting turn owns its session; stopping is a separate, explicit act.
+  if (wasActive && sessionSwitchLocked.value) {
+    sessionManageError.value = '当前会话仍在回答或等待交互，请先停止再删除。';
+    return;
+  }
+  // Deleting a conversation must not leave its unsent draft behind in the host
+  // cache. Clearing the input first removes that stored draft; a failed delete
+  // restores the same text so the user never loses it.
+  const draft = wasActive ? whisperText.value : '';
+  // Whether a replacement conversation survives decides the reported destination.
+  const remaining = sessions.sessions.value.filter(item => item.id !== id).length;
+  if (draft) whisperText.value = '';
+  sessionManaging.value = true; sessionManageError.value = null; sessionFeedback.value = ''; sessionCreationError.value = '';
+  try {
+    await sessions.deleteSession(id);
+    if (surface.signal.aborted) return;
+    if (wasActive) {
+      resetMobilePresentation();
+      say(remaining
+        ? '已删除当前会话。可以在会话列表里继续选择，或直接开始新的对话。'
+        : '已删除当前会话。新的对话已准备好。', '会话已删除');
+    }
+    sessionFeedback.value = wasActive
+      ? (draft ? '当前会话已删除，未发送的草稿一并清除。' : remaining ? '当前会话已删除，已切换到其他会话。' : '当前会话已删除，新的对话已准备好。')
+      : `已删除「${target.title}」。`;
+  } catch (error) {
+    if (surface.signal.aborted) return;
+    if (draft && !whisperText.value) whisperText.value = draft;
+    sessionManageError.value = sessionFailure(error, '删除结果未能确认，列表保持不变。可以刷新后重试。');
+    if (error instanceof AervoxHttpError && error.status === 404) await refreshMobileSessions();
+  } finally { sessionManaging.value = false; }
 }
 
 /* ---------- 回到默认工作台（逃生口） ---------- */
@@ -529,6 +625,7 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
   whisperDisposed = true;
+  clearTimeout(copyTimer);
   whisperResizeObserver?.disconnect();
   whisperResizeObserver = undefined;
   inputLayer?.dispose(); inputLayer = undefined;
@@ -580,6 +677,10 @@ onBeforeUnmount(() => {
         <p v-else class="pc-dialogue-text" aria-live="polite">{{ dialogueText }}<span v-if="dialogueTyping" class="pc-caret" aria-hidden="true" /></p>
         <div class="pc-dialogue-foot">
           <span class="pc-dialogue-ctx">{{ dialogueCtx }}</span>
+          <span v-if="toolActivity" class="pc-dialogue-ctx pc-tool-activity" role="status">{{ toolActivity }}</span>
+          <span v-if="copyFeedback" class="pc-dialogue-ctx pc-copy-feedback" role="status">{{ copyFeedback }}</span>
+          <component v-if="material3" :is="'md-icon-button'" class="pc-copy" type="button" aria-label="复制这次回复"
+            :disabled="dialogueTyping || !dialogueText.trim()" @click="copyReply"><Copy :size="18" aria-hidden="true" /></component>
         </div>
       </div>
       <Teleport :to="mobileFeedbackRegion" :disabled="!material3 || !mobileFeedbackRegion">
@@ -660,7 +761,9 @@ onBeforeUnmount(() => {
     </aside>
     <MobileSessionsDialog v-if="material3" v-model="sessionsOpen" :sessions="sessions.sessions.value" :active-session-id="sessions.activeSessionId.value"
       :loading="sessions.loading.value" :error="sessionListError" :notice="sessionCreationError || sessionFeedback" :changing="sessionChanging" :switch-locked="sessionSwitchLocked" :lock-reason="switchLockReason"
-      @refresh="refreshMobileSessions" @new="createMobileSession" @select="selectMobileSession" @history="session => openMobileHistory(session.id, session.title)" />
+      :managing="sessionManaging" :manage-error="sessionManageError"
+      @refresh="refreshMobileSessions" @new="createMobileSession" @select="selectMobileSession" @history="session => openMobileHistory(session.id, session.title)"
+      @rename="renameMobileSession" @delete="deleteMobileSession" />
     <MobileHistoryDialog v-if="material3" v-model="historyOpen" :session-id="historySessionId" :title="historyTitle" />
     <MobileSettingsDialog v-model="settingsOpen" :panels="props.settingsPanels" />
     <ExtensionSlot name="companion:drawers" />
@@ -839,6 +942,9 @@ onBeforeUnmount(() => {
   margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--pc-line-soft);
 }
 .pc-dialogue-ctx { min-width: 0; font-size: 11px; color: var(--pc-ink-3); letter-spacing: .04em; overflow-wrap: anywhere; }
+.pc-tool-activity { flex: 0 0 auto; color: var(--md-sys-color-primary, var(--pc-ink-2)); }
+.pc-copy-feedback { flex: 0 0 auto; color: var(--md-sys-color-primary, var(--pc-ink-2)); }
+.pc-copy { flex: 0 0 48px; width: 48px; height: 48px; margin-inline-start: auto; }
 .pc-dialogue-foot button { min-width: 44px; min-height: 44px; }
 .pc-feedback {
   display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px;

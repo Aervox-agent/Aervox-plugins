@@ -658,6 +658,95 @@ it('keeps mobile session switching and creation available after missing model co
   expect(streamTurn).toHaveBeenCalledOnce();
 });
 
+it('renames a mobile session only after the host acknowledges the new title', async () => {
+  const second = { ...recentSession, id: 'second', title: '另一段对话' };
+  request.mockImplementation(async (method, path) => {
+    if (method === 'GET' && path === '/v1/sessions') return { items: [recentSession, second] };
+    if (method === 'PATCH' && path === '/v1/sessions/second') return { ...second, title: '改过的名字' };
+    return requestImplementation(method, path);
+  });
+  const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
+  const dialog = wrapper.getComponent(MobileSessionsDialog);
+  expect(dialog.props('sessions')[1]!.title).toBe('另一段对话');
+  dialog.vm.$emit('rename', 'second', '改过的名字'); await flushPromises();
+  expect(request.mock.calls.filter(([method, path]) => method === 'PATCH' && path === '/v1/sessions/second'))
+    .toEqual([['PATCH', '/v1/sessions/second', { title: '改过的名字' }]]);
+  expect(dialog.props('sessions').map(item => item.title)).toEqual([recentSession.title, '改过的名字']);
+  expect(dialog.props('notice')).toContain('已改名为「改过的名字」');
+  expect(dialog.props('manageError')).toBeNull();
+  expect(streamTurn).not.toHaveBeenCalled();
+});
+
+it('keeps the old mobile session title when the rename is rejected', async () => {
+  request.mockImplementation(async (method, path) => {
+    if (method === 'GET' && path === '/v1/sessions') return { items: [recentSession] };
+    if (method === 'PATCH') throw new AervoxHttpError(500, 'native', { code: 'STORE_FAILED', message: 'PRIVATE_DETAIL' });
+    return requestImplementation(method, path);
+  });
+  const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
+  const dialog = wrapper.getComponent(MobileSessionsDialog);
+  dialog.vm.$emit('rename', recentSession.id, '不该生效的名字'); await flushPromises();
+  expect(dialog.props('sessions').map(item => item.title)).toEqual([recentSession.title]);
+  expect(dialog.props('manageError')).toContain('名称保持不变');
+  expect(dialog.props('notice')).toBeFalsy();
+  expect(wrapper.text()).not.toContain('PRIVATE_DETAIL');
+  expect(wrapper.text()).not.toContain('不该生效的名字');
+});
+
+it('deletes a non-active mobile session and reports it only after the host confirms', async () => {
+  const second = { ...recentSession, id: 'second', title: '另一段对话' };
+  let deleted = false;
+  request.mockImplementation(async (method, path) => {
+    if (method === 'GET' && path === '/v1/sessions') return { items: deleted ? [recentSession] : [recentSession, second] };
+    if (method === 'DELETE' && path === '/v1/sessions/second') { deleted = true; return undefined; }
+    return requestImplementation(method, path);
+  });
+  const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
+  const dialog = wrapper.getComponent(MobileSessionsDialog);
+  dialog.vm.$emit('delete', 'second'); await flushPromises();
+  expect(request.mock.calls.filter(([method, path]) => method === 'DELETE' && path === '/v1/sessions/second')).toHaveLength(1);
+  expect(dialog.props('sessions').map(item => item.id)).toEqual([recentSession.id]);
+  expect(dialog.props('notice')).toContain('已删除「另一段对话」');
+  expect(wrapper.get('.pc-current-session').text()).toBe(recentSession.title);
+  expect(streamTurn).not.toHaveBeenCalled();
+});
+
+it('deletes the active mobile session, moves to the remaining conversation and clears its unsent draft', async () => {
+  const second = { ...recentSession, id: 'second', title: '另一段对话' };
+  request.mockImplementation(async (method, path) => {
+    if (method === 'GET' && path === '/v1/sessions') return { items: [recentSession, second] };
+    if (method === 'DELETE' && path === '/v1/sessions/ses_recent') return undefined;
+    return requestImplementation(method, path);
+  });
+  const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
+  const input = wrapper.get('.pc-whisper-input textarea');
+  await input.setValue('尚未发送的草稿');
+  expect(localStorage.getItem('aervox-mobile-draft:ses_recent')).toBe('尚未发送的草稿');
+  const dialog = wrapper.getComponent(MobileSessionsDialog);
+  dialog.vm.$emit('delete', recentSession.id); await flushPromises();
+  expect(request.mock.calls.filter(([method, path]) => method === 'DELETE' && path === '/v1/sessions/ses_recent')).toHaveLength(1);
+  expect(wrapper.get('.pc-current-session').text()).toBe(second.title);
+  expect((input.element as HTMLTextAreaElement).value).toBe('');
+  // The deleted conversation must not keep an orphaned draft in the host cache.
+  expect(localStorage.getItem('aervox-mobile-draft:ses_recent')).toBeNull();
+  expect(dialog.props('notice')).toContain('草稿一并清除');
+});
+
+it('refuses to delete an executing mobile session and keeps the draft and conversation', async () => {
+  streamTurn.mockImplementationOnce(() => new Promise(() => {}));
+  const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
+  const input = wrapper.get('.pc-whisper-input textarea');
+  await input.setValue('正在发送的消息');
+  await wrapper.get('.pc-whisper-input md-filled-button').trigger('click'); await flushPromises();
+  const dialog = wrapper.getComponent(MobileSessionsDialog);
+  expect(dialog.props('switchLocked')).toBe(true);
+  dialog.vm.$emit('delete', recentSession.id); await flushPromises();
+  expect(request.mock.calls.filter(([method]) => method === 'DELETE')).toHaveLength(0);
+  expect(dialog.props('manageError')).toContain('请先停止再删除');
+  expect(wrapper.get('.pc-current-session').text()).toBe(recentSession.title);
+  expect((input.element as HTMLTextAreaElement).value).toBe('正在发送的消息');
+});
+
 it('lets a deliberately cleared native draft stay cleared after a definite configuration refusal', async () => {
   streamTurn.mockRejectedValueOnce(new AervoxHttpError(422, 'native', { code: 'MODEL_NOT_CONFIGURED' }));
   const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
@@ -1128,4 +1217,28 @@ it('does not label a missing stored mobile identity as a newly created conversat
   await wrapper.get('.pc-whisper-input md-filled-button').trigger('click'); await flushPromises();
   expect(wrapper.getComponent(MobileSessionsDialog).props('notice')).toContain('当前会话已不可用');
   expect(request.mock.calls.some(call => call[0] === 'POST' && call[1] === '/v1/sessions')).toBe(false);
+});
+
+it('copies only the reply text that is already visible on the mobile surface', async () => {
+  const writeText = vi.fn(async () => {});
+  vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+  const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
+  const copy = wrapper.get('md-icon-button[aria-label="复制这次回复"]');
+  await vi.waitFor(() => expect(copy.attributes('disabled')).toBe('false'), { timeout: 4000 });
+  const shown = wrapper.get('.pc-dialogue-text').text().trim();
+  expect(shown.length).toBeGreaterThan(0);
+  await copy.trigger('click');
+  await flushPromises();
+  expect(writeText).toHaveBeenCalledWith(shown);
+  expect(wrapper.get('.pc-copy-feedback').text()).toBe('已复制这次回复。');
+});
+
+it('explains a refused clipboard write instead of claiming the reply was copied', async () => {
+  vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText: vi.fn(async () => { throw new Error('denied'); }) } });
+  const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
+  const copy = wrapper.get('md-icon-button[aria-label="复制这次回复"]');
+  await vi.waitFor(() => expect(copy.attributes('disabled')).toBe('false'), { timeout: 4000 });
+  await copy.trigger('click');
+  await flushPromises();
+  expect(wrapper.get('.pc-copy-feedback').text()).toContain('长按回复文字');
 });
