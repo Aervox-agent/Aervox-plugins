@@ -114,7 +114,9 @@ async function copyReply() {
   clearTimeout(copyTimer);
   copyTimer = setTimeout(() => { copyFeedback.value = ''; }, 4000);
 }
-const dictationSupported = typeof getClientTransport().speechInput === 'function';
+// inject() only resolves during setup; event handlers must reuse this capture.
+const clientTransport = getClientTransport();
+const dictationSupported = typeof clientTransport.speechInput === 'function';
 const dictating = ref(false);
 const dictationFeedback = ref('');
 let dictationTimer: ReturnType<typeof setTimeout> | undefined;
@@ -131,7 +133,7 @@ async function dictate() {
   dictating.value = true;
   dictationFeedback.value = '正在聆听…';
   try {
-    const { text } = await getClientTransport().speechInput!();
+    const { text } = await clientTransport.speechInput!();
     whisperText.value = whisperText.value ? `${whisperText.value} ${text}` : text;
     dictationFeedback.value = '已识别，可继续编辑或发送。';
   } catch (error) {
@@ -143,7 +145,7 @@ async function dictate() {
     dictationTimer = setTimeout(() => { dictationFeedback.value = ''; }, 4000);
   }
 }
-const speechSupported = typeof getClientTransport().speakText === 'function';
+const speechSupported = typeof clientTransport.speakText === 'function';
 const speechFeedback = ref('');
 let speechTimer: ReturnType<typeof setTimeout> | undefined;
 /** Reads the reply that is already on screen; the phone owns the speech engine. */
@@ -152,7 +154,7 @@ async function readAloud() {
   if (!text.trim() || dialogueTyping.value || !speechSupported) return;
   speechFeedback.value = '';
   try {
-    await getClientTransport().speakText!({ text });
+    await clientTransport.speakText!({ text });
     speechFeedback.value = '正在朗读这次回复。';
   } catch (error) {
     speechFeedback.value = error instanceof Error && error.message === 'SPEECH_UNAVAILABLE'
@@ -173,7 +175,7 @@ interface FailedTurn {
   sessionId?: string;
 }
 const failedTurn = ref<FailedTurn>();
-const turnController = createConversationController(getClientTransport(), surface.signal);
+const turnController = createConversationController(clientTransport, surface.signal);
 const conversationState = ref(turnController.state);
 const unsubscribeConversation = turnController.subscribe(state => { conversationState.value = state; });
 let pluginRuntime: ReturnType<typeof createWorkbenchPluginRuntime> | undefined;
@@ -436,17 +438,21 @@ const whisperText = ref('');
 // Text attachments ride along with the next message (images await a multimodal
 // bridge; a text file is an honest first slice of the attachment story).
 const attachment = ref<{ name: string; text: string } | null>(null);
-const attachmentSupported = typeof getClientTransport().pickTextFile === 'function';
+const attachmentSupported = typeof clientTransport.pickTextFile === 'function';
 async function pickAttachment() {
   if (!attachmentSupported) return;
   try {
-    const picked = await getClientTransport().pickTextFile!();
+    const picked = await clientTransport.pickTextFile!();
     const budget = 32 * 1024;
     const text = picked.text.length > budget
       ? `${picked.text.slice(0, budget)}\n（附件超过 32 KiB，已截断）`
       : picked.text;
     attachment.value = { name: picked.name, text };
-  } catch { /* Cancelled or unavailable: keep composing without an attachment. */ }
+  } catch (error) {
+    // Cancellation is quiet; a broken picker must be visible, not swallowed.
+    const code = error instanceof Error ? error.message : '';
+    if (code !== 'FILE_PICK_CANCELLED') dictationFeedback.value = '文件选择没有打开，可以稍后再试。';
+  }
 }
 const whisperInput = ref<HTMLInputElement | HTMLTextAreaElement>();
 const whisperPill = ref<HTMLButtonElement>();
