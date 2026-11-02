@@ -852,7 +852,6 @@ onBeforeUnmount(() => {
   /* The JS viewport var can go stale across window resizes (split screen,
    * freeform); dvh always tracks the real viewport and clamps the overshoot. */
   max-height: 100dvh;
-  overflow: hidden;
   width: 100%;
   min-width: 0;
   display: grid;
