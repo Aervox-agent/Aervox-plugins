@@ -21,6 +21,7 @@ import { useDialogueTyper } from './dialogue-typer';
 import MobileSettingsDialog from './MobileSettingsDialog.vue';
 import MobileSessionsDialog from './MobileSessionsDialog.vue';
 import MobileHistoryDialog from './MobileHistoryDialog.vue';
+import { renderMarkdown } from '@aervox/ui/markdown';
 import '@aervox/ui/theme/companion';
 import type { SurfaceNavigation } from '@aervox/ui/companion';
 
@@ -674,6 +675,9 @@ onBeforeUnmount(() => {
           <span v-else class="pc-waiting-dots" aria-hidden="true"><i /><i /><i /></span>
           <span>正在等待回复…</span>
         </p>
+        <!-- Typing stays plain so the caret lands on real characters; a finished
+             answer renders the same safe markdown the history panel uses. -->
+        <div v-else-if="!dialogueTyping && dialogueText.trim()" class="pc-dialogue-text markdown-body" aria-live="polite" v-html="renderMarkdown(dialogueText)" />
         <p v-else class="pc-dialogue-text" aria-live="polite">{{ dialogueText }}<span v-if="dialogueTyping" class="pc-caret" aria-hidden="true" /></p>
         <div class="pc-dialogue-foot">
           <span class="pc-dialogue-ctx">{{ dialogueCtx }}</span>
@@ -921,6 +925,20 @@ onBeforeUnmount(() => {
   font-size: 15px; line-height: 1.85; min-height: 56px;
   white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal;
 }
+/* Finished answers render block markdown, so wrapping returns to normal flow. */
+.pc-dialogue-text.markdown-body { white-space: normal; }
+.pc-dialogue-text :deep(p) { margin: 0 0 .7em; }
+.pc-dialogue-text :deep(p:last-child) { margin-bottom: 0; }
+.pc-dialogue-text :deep(ul), .pc-dialogue-text :deep(ol) { margin: .3em 0 .8em; padding-inline-start: 1.3em; }
+.pc-dialogue-text :deep(li) { margin: .2em 0; }
+.pc-dialogue-text :deep(code) { padding: .12em .35em; border-radius: 6px; background: var(--pc-line-soft); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .92em; }
+.pc-dialogue-text :deep(pre) { margin: .6em 0; padding: 12px; border-radius: 12px; background: var(--pc-line-soft); overflow-x: auto; }
+.pc-dialogue-text :deep(pre code) { padding: 0; background: transparent; font-size: .88em; line-height: 1.6; }
+.pc-dialogue-text :deep(h1), .pc-dialogue-text :deep(h2), .pc-dialogue-text :deep(h3) { margin: .8em 0 .4em; font-size: 1.05em; line-height: 1.45; }
+.pc-dialogue-text :deep(blockquote) { margin: .6em 0; padding-inline-start: .8em; border-inline-start: 3px solid var(--pc-line); color: var(--pc-ink-2); }
+.pc-dialogue-text :deep(a) { color: var(--pc-accent); text-decoration: underline; overflow-wrap: anywhere; }
+.pc-dialogue-text :deep(img) { max-width: 100%; height: auto; border-radius: 12px; }
+.pc-dialogue-text :deep(hr) { border: 0; border-top: 1px solid var(--pc-line); margin: 1em 0; }
 .pc-dialogue-waiting {
   display: flex; align-items: center; gap: 10px;
   min-height: 56px; margin-block: 1em;

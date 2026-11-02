@@ -1242,3 +1242,21 @@ it('explains a refused clipboard write instead of claiming the reply was copied'
   await flushPromises();
   expect(wrapper.get('.pc-copy-feedback').text()).toContain('长按回复文字');
 });
+
+it('renders a finished mobile reply as safe markdown instead of raw syntax', async () => {
+  streamTurn.mockImplementationOnce(async (_id: string, _text: string, callbacks: { onDelta: (text: string) => void; onDone: () => void }) => {
+    callbacks.onDelta('**加粗**、`代码` 和列表：\n\n- 第一项\n- 第二项\n\n<img src=x onerror="alert(1)">');
+    callbacks.onDone();
+  });
+  const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
+  await wrapper.get('.pc-whisper-input textarea').setValue('给我格式化的回答');
+  await wrapper.get('.pc-whisper-input md-filled-button').trigger('click');
+  await vi.waitFor(() => expect(wrapper.find('.pc-dialogue-text.markdown-body strong').exists()).toBe(true), { timeout: 6000 });
+  const rendered = wrapper.get('.pc-dialogue-text.markdown-body');
+  expect(rendered.find('strong').text()).toBe('加粗');
+  expect(rendered.find('code').text()).toBe('代码');
+  expect(rendered.findAll('li').map(item => item.text())).toEqual(['第一项', '第二项']);
+  // Raw HTML in a model answer stays text; it never becomes an element.
+  expect(rendered.find('img').exists()).toBe(false);
+  expect(rendered.text()).not.toContain('**');
+});

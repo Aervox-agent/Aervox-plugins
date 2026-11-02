@@ -236,3 +236,43 @@ describe('mobile read-only history panel', () => {
     expect(wrapper.find('[role="alert"]').exists()).toBe(false); expect(streamTurn).not.toHaveBeenCalled();
   });
 });
+
+describe('mobile session sharing', () => {
+  it('offers sharing only when the host can hand text to the system sheet', async () => {
+    const wrapper = mount(MobileHistoryDialog, { props: { modelValue: true, sessionId: 'ses_inspected', title: '历史' }, global });
+    await flushPromises();
+    expect(wrapper.text()).not.toContain('分享这次对话');
+  });
+
+  it('exports the whole session and hands it to the host exactly once', async () => {
+    const shareText = vi.fn(async () => {});
+    configureAervoxClient({ sessionId: 'ses_live', platform: {}, transport: {
+      request: request as never, streamTurn: streamTurn as never, observeTurn: observeTurn as never,
+      submitQuestionAnswers: vi.fn(), decideToolApproval: vi.fn(), shareText,
+    } });
+    const wrapper = mount(MobileHistoryDialog, { props: { modelValue: true, sessionId: 'ses_inspected', title: '要分享的会话' }, global });
+    await flushPromises();
+    await button(wrapper, '分享这次对话').trigger('click');
+    await flushPromises();
+    expect(shareText).toHaveBeenCalledTimes(1);
+    const payload = shareText.mock.calls[0]![0] as { title: string; text: string };
+    expect(payload.title).toBe('要分享的会话');
+    expect(payload.text).toContain('# 要分享的会话');
+    expect(payload.text).toContain('保存的回复');
+    expect(wrapper.text()).toContain('已分享这次对话');
+  });
+
+  it('reports a failed share without pretending the conversation left the phone', async () => {
+    const shareText = vi.fn(async () => { throw new Error('SHARE_UNAVAILABLE'); });
+    configureAervoxClient({ sessionId: 'ses_live', platform: {}, transport: {
+      request: request as never, streamTurn: streamTurn as never, observeTurn: observeTurn as never,
+      submitQuestionAnswers: vi.fn(), decideToolApproval: vi.fn(), shareText,
+    } });
+    const wrapper = mount(MobileHistoryDialog, { props: { modelValue: true, sessionId: 'ses_inspected', title: '历史' }, global });
+    await flushPromises();
+    await button(wrapper, '分享这次对话').trigger('click');
+    await flushPromises();
+    expect(wrapper.text()).toContain('分享没有完成');
+    expect(wrapper.text()).not.toContain('已分享这次对话');
+  });
+});

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { toRef } from 'vue';
+import { ref, toRef } from 'vue';
 import type { SessionHistoryMessage } from '@aervox/contracts';
+import { buildSessionTranscript, createSessionHistoryClient, getClientTransport } from '@aervox/api-client';
 import { useSessionHistory } from '@aervox/ui/companion';
 import { renderMarkdown } from '@aervox/ui/markdown';
 import { AervoxButton, AervoxDialog } from '@aervox/ui/primitives';
@@ -11,6 +12,24 @@ const states: Record<string, string> = { Created: '等待执行', Running: '执�
 function speaker(message: SessionHistoryMessage) {
   return message.contentKind === 'accepted_input' ? '本轮输入' : message.role === 'assistant' ? '思隅' : message.role === 'system' ? '系统记录' : '用户记录';
 }
+const transport = getClientTransport();
+const shareSupported = typeof transport.shareText === 'function';
+const sharing = ref(false);
+const shareFeedback = ref('');
+/** Exports the whole session, not just the pages currently on screen. */
+async function shareSession() {
+  if (sharing.value || !props.sessionId || !transport.shareText) return;
+  sharing.value = true; shareFeedback.value = '';
+  try {
+    const transcript = await buildSessionTranscript({
+      sessionId: props.sessionId, title: props.title,
+      getPage: input => createSessionHistoryClient(transport).getPage(props.sessionId, input),
+    });
+    await transport.shareText({ title: props.title, text: transcript.text });
+    shareFeedback.value = transcript.truncated ? '已分享；内容过多，导出已截断。' : '已分享这次对话。';
+  } catch { shareFeedback.value = '分享没有完成，记录仍保留在手机上。'; }
+  finally { sharing.value = false; }
+}
 </script>
 
 <template>
@@ -19,7 +38,9 @@ function speaker(message: SessionHistoryMessage) {
     <div class="mobile-history-controls">
       <label>每页轮数<select v-model.number="limit" class="aervox-field" aria-label="历史每页轮数" :disabled="loading"><option v-for="count in [1, 5, 10, 20]" :key="count" :value="count">{{ count }}</option></select></label>
       <AervoxButton variant="ghost" :disabled="loading || !sessionId" @click="refresh">{{ atLatest ? '刷新记录' : '回到最新记录' }}</AervoxButton>
+      <AervoxButton v-if="shareSupported" variant="ghost" :disabled="loading || sharing || !sessionId" @click="shareSession">{{ sharing ? '正在准备…' : '分享这次对话' }}</AervoxButton>
     </div>
+    <p v-if="shareFeedback" class="mobile-history-note" role="status">{{ shareFeedback }}</p>
     <div class="mobile-history-records" aria-label="已保存的对话记录" :aria-busy="loading">
       <p v-if="loading" role="status">正在读取对话记录…</p>
       <p v-else-if="error" role="alert">{{ error }}</p>
