@@ -36,7 +36,7 @@ async function shareSession() {
   <AervoxDialog :model-value="modelValue" title="对话回看" :subtitle="title" custom-class="mobile-history-dialog" body-max-height="calc(100dvh - 180px)" @update:model-value="emit('update:modelValue', $event)">
     <p class="mobile-history-note">这里只显示已保存的记录；回看不会切换会话或停止当前回复。</p>
     <div class="mobile-history-controls">
-      <label>每页轮数<select v-model.number="limit" class="aervox-field" aria-label="历史每页轮数" :disabled="loading"><option v-for="count in [1, 5, 10, 20]" :key="count" :value="count">{{ count }}</option></select></label>
+      <label>每页显示<select v-model.number="limit" class="aervox-field" aria-label="历史每页显示" :disabled="loading"><option v-for="count in [1, 5, 10, 20]" :key="count" :value="count">{{ count }}</option></select></label>
       <AervoxButton variant="ghost" :disabled="loading || !sessionId" @click="refresh">{{ atLatest ? '刷新记录' : '回到最新记录' }}</AervoxButton>
       <AervoxButton v-if="shareSupported" variant="ghost" :disabled="loading || sharing || !sessionId" @click="shareSession">{{ sharing ? '正在准备…' : '分享这次对话' }}</AervoxButton>
     </div>
@@ -55,9 +55,11 @@ async function shareSession() {
           </article>
           <p v-if="!turn.messages.length">这一轮暂无可显示的消息。</p>
         </section>
-        <p v-if="!page.items.length">暂无可显示的记录。</p>
-        <AervoxButton v-if="page.nextCursor" :disabled="loading" @click="earlier">更早一页</AervoxButton>
-        <p v-else class="mobile-history-note">已到当前可读取记录的起点。</p>
+        <p v-if="!page.items.length">这个会话还没有已保存的记录。</p>
+        <template v-else>
+          <AervoxButton v-if="page.nextCursor" :disabled="loading" @click="earlier">更早一页</AervoxButton>
+          <p v-else class="mobile-history-note">已经看到最早的记录。</p>
+        </template>
       </template>
     </div>
   </AervoxDialog>
