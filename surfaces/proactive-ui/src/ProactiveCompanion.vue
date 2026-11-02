@@ -15,7 +15,7 @@ import { ExtensionSlot } from '@aervox/ui/primitives';
 import { AervoxBrandMark, PetWithFallback, UserQuestionComposer, readCompanionIdentity, useSessionDraft } from '@aervox/ui/companion';
 import { AervoxHttpError, createConversationController, getClientTransport, useAervoxApi, useAervoxPlugins, useAervoxSessions } from '@aervox/api-client';
 import { createUIRegistry, provideUIRegistry, createWorkbenchPluginRuntime, createPluginEventBus, createPluginStateStore, provideUIPluginContext, resolveOutgoingMessage, type BuiltinUIPlugin, type UIPluginContext } from '@aervox/ui/plugin-api';
-import { ArrowUpRight, Copy, History, MessagesSquare, MessageSquare, RotateCcw, Settings, Square, Volume2, X } from 'lucide-vue-next';
+import { ArrowUpRight, Copy, History, MessagesSquare, MessageSquare, Mic, RotateCcw, Settings, Square, Volume2, X } from 'lucide-vue-next';
 import type { AskUserQuestionAnswerItem } from '@aervox/contracts';
 import { useDialogueTyper } from './dialogue-typer';
 import MobileSettingsDialog from './MobileSettingsDialog.vue';
@@ -113,6 +113,35 @@ async function copyReply() {
   }
   clearTimeout(copyTimer);
   copyTimer = setTimeout(() => { copyFeedback.value = ''; }, 4000);
+}
+const dictationSupported = typeof getClientTransport().speechInput === 'function';
+const dictating = ref(false);
+const dictationFeedback = ref('');
+let dictationTimer: ReturnType<typeof setTimeout> | undefined;
+const DICTATION_ERRORS: Record<string, string> = {
+  RECORD_AUDIO_REQUIRED: '需要麦克风权限，请在系统设置中允许后重试。',
+  NO_SPEECH: '没有听到内容，请再试一次。',
+  SPEECH_INPUT_TIMEOUT: '聆听超时，请再试一次。',
+  SPEECH_INPUT_BUSY: '正在聆听中，请稍候。',
+  SPEECH_INPUT_UNAVAILABLE: '这台手机没有可用的语音识别。',
+};
+/** One bounded recognition fills the draft; the phone owns the recognizer. */
+async function dictate() {
+  if (!dictationSupported || dictating.value) return;
+  dictating.value = true;
+  dictationFeedback.value = '正在聆听…';
+  try {
+    const { text } = await getClientTransport().speechInput!();
+    whisperText.value = whisperText.value ? `${whisperText.value} ${text}` : text;
+    dictationFeedback.value = '已识别，可继续编辑或发送。';
+  } catch (error) {
+    dictationFeedback.value = DICTATION_ERRORS[error instanceof Error ? error.message : '']
+      ?? '语音识别没有开始，可以稍后再试。';
+  } finally {
+    dictating.value = false;
+    clearTimeout(dictationTimer);
+    dictationTimer = setTimeout(() => { dictationFeedback.value = ''; }, 4000);
+  }
 }
 const speechSupported = typeof getClientTransport().speakText === 'function';
 const speechFeedback = ref('');
@@ -647,6 +676,7 @@ onBeforeUnmount(() => {
   whisperDisposed = true;
   clearTimeout(copyTimer);
   clearTimeout(speechTimer);
+  clearTimeout(dictationTimer);
   whisperResizeObserver?.disconnect();
   whisperResizeObserver = undefined;
   inputLayer?.dispose(); inputLayer = undefined;
@@ -764,6 +794,7 @@ onBeforeUnmount(() => {
     <div v-if="material3" ref="mobileFeedbackRegion" class="pc-mobile-feedback" />
     <p v-if="preparingSession || sessionChanging" class="pc-mobile-preparing" role="status">正在准备新对话，草稿会保留…</p>
     <p v-if="material3 && sessionFeedback" class="pc-mobile-session-feedback" role="alert">{{ sessionFeedback }}</p>
+    <p v-if="material3 && dictationFeedback" class="pc-mobile-status" role="status">{{ dictationFeedback }}</p>
     <nav v-if="material3" class="pc-mobile-actions" aria-label="移动端操作">
       <component :is="'md-text-button'" type="button" aria-label="会话列表" @click="sessionsOpen = true"><MessagesSquare slot="icon" :size="20" />会话</component>
       <component :is="'md-text-button'" type="button" aria-label="回看当前会话" :disabled="!sessions.activeSession.value" @click="openMobileHistory()"><History slot="icon" :size="20" />回看</component>
@@ -783,7 +814,9 @@ onBeforeUnmount(() => {
           :placeholder="'想到什么，直接告诉' + companionName" enterkeyhint="send" @keydown="onWhisperKeydown" />
         <component :is="buttonTag('md-filled-tonal-button')" v-if="canStop" type="button" class="pc-stop" :disabled="stopping" @click="stopTurn"><Square :slot="material3 ? 'icon' : undefined" :size="material3 ? 18 : 12" aria-hidden="true" />{{ stopping ? '停止中' : '停止' }}</component>
         <component :is="buttonTag('md-filled-button')" v-else type="button" :disabled="!whisperText.trim() || material3 && (sessionSwitchLocked || !sessionsReady)" @click="sendWhisper()">发送</component>
-        <component :is="buttonTag('md-icon-button')" type="button" v-if="!material3 || whisperOpen" class="pc-whisper-close" title="收起" aria-label="收起输入" @click="closeWhisper"><X :size="material3 ? 24 : 18" aria-hidden="true" /></component>
+        <component v-if="material3 && dictationSupported" :is="'md-icon-button'" type="button" class="pc-dictate"
+          :aria-label="dictating ? '正在聆听' : '语音输入'" :disabled="dictating || preparingSession || sessionChanging" @click="dictate"><Mic :size="20" aria-hidden="true" /></component>
+                <component :is="buttonTag('md-icon-button')" type="button" v-if="!material3 || whisperOpen" class="pc-whisper-close" title="收起" aria-label="收起输入" @click="closeWhisper"><X :size="material3 ? 24 : 18" aria-hidden="true" /></component>
       </div>
     </aside>
     <MobileSessionsDialog v-if="material3" v-model="sessionsOpen" :sessions="sessions.sessions.value" :active-session-id="sessions.activeSessionId.value"
@@ -987,6 +1020,8 @@ onBeforeUnmount(() => {
 .pc-copy-feedback { flex: 0 0 auto; color: var(--md-sys-color-primary, var(--pc-ink-2)); }
 .pc-copy { flex: 0 0 48px; width: 48px; height: 48px; margin-inline-start: auto; }
 .pc-speak { flex: 0 0 48px; width: 48px; height: 48px; }
+.pc-dictate { flex: 0 0 48px; width: 48px; height: 48px; }
+.pc-mobile-status { flex: 0 0 auto; margin: 8px 16px; font-size: 14px; line-height: 20px; color: var(--md-sys-color-on-surface-variant, var(--pc-ink-2)); }
 .pc-dialogue-foot button { min-width: 44px; min-height: 44px; }
 .pc-feedback {
   display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px;

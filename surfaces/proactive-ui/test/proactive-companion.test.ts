@@ -1296,3 +1296,36 @@ it('explains a missing speech engine instead of pretending it read aloud', async
   await flushPromises();
   expect(wrapper.get('.pc-copy-feedback').text()).toBe('这台手机没有可用的朗读引擎。');
 });
+
+it('fills the draft from the host speech input', async () => {
+  const speechInput = vi.fn(async () => ({ text: '今天天气不错' }));
+  configureAervoxClient({ sessionId: 'test_initial', platform: {}, transport: {
+    request: request as never, streamTurn: streamTurn as never, observeTurn: observeTurn as never,
+    submitQuestionAnswers: vi.fn(), decideToolApproval: vi.fn(), speechInput,
+  } });
+  const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
+  const mic = wrapper.get('md-icon-button[aria-label="语音输入"]');
+  await mic.trigger('click');
+  await flushPromises();
+  expect(speechInput).toHaveBeenCalledTimes(1);
+  expect(wrapper.get('#pc-material-whisper').element.value).toContain('今天天气不错');
+  expect(wrapper.get('.pc-mobile-status').text()).toBe('已识别，可继续编辑或发送。');
+});
+
+it('hides dictation when the host provides no recognizer', async () => {
+  const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
+  expect(wrapper.find('md-icon-button[aria-label="语音输入"]').exists()).toBe(false);
+});
+
+it('explains a missing microphone permission instead of pretending it heard', async () => {
+  const speechInput = vi.fn(async () => { throw new Error('RECORD_AUDIO_REQUIRED'); });
+  configureAervoxClient({ sessionId: 'test_initial', platform: {}, transport: {
+    request: request as never, streamTurn: streamTurn as never, observeTurn: observeTurn as never,
+    submitQuestionAnswers: vi.fn(), decideToolApproval: vi.fn(), speechInput,
+  } });
+  const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
+  const mic = wrapper.get('md-icon-button[aria-label="语音输入"]');
+  await mic.trigger('click');
+  await flushPromises();
+  expect(wrapper.get('.pc-mobile-status').text()).toBe('需要麦克风权限，请在系统设置中允许后重试。');
+});
