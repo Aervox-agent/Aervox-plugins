@@ -849,6 +849,10 @@ onBeforeUnmount(() => {
   position: fixed;
   inset: var(--pc-viewport-top, 0px) 0 auto;
   height: var(--pc-viewport-height, 100dvh);
+  /* The JS viewport var can go stale across window resizes (split screen,
+   * freeform); dvh always tracks the real viewport and clamps the overshoot. */
+  max-height: 100dvh;
+  overflow: hidden;
   width: 100%;
   min-width: 0;
   display: grid;
@@ -1283,6 +1287,10 @@ onBeforeUnmount(() => {
   .proactive-companion[data-design-system="material3"] .pc-dialogue-box { padding: 16px; }
   .proactive-companion[data-design-system="material3"] .pc-whisper-input { padding-inline-start: 12px; }
   .proactive-companion[data-design-system="material3"] .pc-whisper-input > :is(md-filled-button, md-filled-tonal-button) { min-width: 48px; }
+  /* Tiny multi-window widths wrap the placeholder; cap the growth so the
+   * composer row stays on screen instead of pushing past the viewport. */
+  .proactive-companion[data-design-system="material3"] .pc-whisper-input textarea,
+  .pc-viewport--short .pc-whisper-input textarea { min-height: 24px; max-height: 48px; }
 }
 </style>
 
