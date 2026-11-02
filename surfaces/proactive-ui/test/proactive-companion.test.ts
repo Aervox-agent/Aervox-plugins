@@ -1324,9 +1324,11 @@ it('attaches a picked text file to the next message and clears it after sending'
   expect(pickTextFile).toHaveBeenCalledTimes(1);
   expect(wrapper.get('.pc-attachment-chip').text()).toContain('notes.md');
   await wrapper.get('#pc-material-whisper').setValue('帮我总结');
-  await wrapper.get('md-filled-button').trigger('click');
+  await wrapper.get('.pc-whisper-input md-filled-button').trigger('click');
   await flushPromises();
-  const sent = request.mock.calls.map((call) => JSON.stringify(call)).join(' ');
+  await flushPromises();
+  // The composed message can leave through any send channel the controller picks.
+  const sent = JSON.stringify([request.mock.calls, streamTurn.mock.calls, observeTurn.mock.calls]);
   expect(sent).toContain('背熟第三章');
   expect(sent).toContain('notes.md');
   expect(wrapper.find('.pc-attachment-chip').exists()).toBe(false);
