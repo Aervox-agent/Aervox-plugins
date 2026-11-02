@@ -15,7 +15,7 @@ import { ExtensionSlot } from '@aervox/ui/primitives';
 import { AervoxBrandMark, PetWithFallback, UserQuestionComposer, readCompanionIdentity, useSessionDraft } from '@aervox/ui/companion';
 import { AervoxHttpError, createConversationController, getClientTransport, useAervoxApi, useAervoxPlugins, useAervoxSessions } from '@aervox/api-client';
 import { createUIRegistry, provideUIRegistry, createWorkbenchPluginRuntime, createPluginEventBus, createPluginStateStore, provideUIPluginContext, resolveOutgoingMessage, type BuiltinUIPlugin, type UIPluginContext } from '@aervox/ui/plugin-api';
-import { ArrowUpRight, Copy, History, MessagesSquare, MessageSquare, Mic, RotateCcw, Settings, Square, Volume2, X } from 'lucide-vue-next';
+import { ArrowUpRight, Copy, History, MessagesSquare, MessageSquare, Mic, Paperclip, RotateCcw, Settings, Square, Volume2, X } from 'lucide-vue-next';
 import type { AskUserQuestionAnswerItem } from '@aervox/contracts';
 import { useDialogueTyper } from './dialogue-typer';
 import MobileSettingsDialog from './MobileSettingsDialog.vue';
@@ -433,6 +433,21 @@ const suggestions = computed<Suggestion[]>(() => {
 /* ---------- 悄悄话输入（淡化） ---------- */
 const whisperOpen = ref(false);
 const whisperText = ref('');
+// Text attachments ride along with the next message (images await a multimodal
+// bridge; a text file is an honest first slice of the attachment story).
+const attachment = ref<{ name: string; text: string } | null>(null);
+const attachmentSupported = typeof getClientTransport().pickTextFile === 'function';
+async function pickAttachment() {
+  if (!attachmentSupported) return;
+  try {
+    const picked = await getClientTransport().pickTextFile!();
+    const budget = 32 * 1024;
+    const text = picked.text.length > budget
+      ? `${picked.text.slice(0, budget)}\n（附件超过 32 KiB，已截断）`
+      : picked.text;
+    attachment.value = { name: picked.name, text };
+  } catch { /* Cancelled or unavailable: keep composing without an attachment. */ }
+}
 const whisperInput = ref<HTMLInputElement | HTMLTextAreaElement>();
 const whisperPill = ref<HTMLButtonElement>();
 const drafts = useSessionDraft({ input: whisperText, sessionId: sessions.activeSessionId, storage: props.draftStorage,
@@ -500,7 +515,10 @@ async function sendWhisper() {
   const raw = whisperText.value;
   const text = raw.trim();
   if (!text || sending.value) return;
-  const sent = await sendTurn(text, 'whisper', material3 ? raw : undefined);
+  const attached = attachment.value;
+  const composed = attached ? `${text}\n\n（附件：${attached.name}）\n${attached.text}` : text;
+  const sent = await sendTurn(composed, 'whisper', material3 ? raw : undefined);
+  if (sent && attached) attachment.value = null;
   if (!material3 && sent && whisperText.value.trim() === text) {
     whisperText.value = '';
     closeWhisper();
@@ -806,6 +824,10 @@ onBeforeUnmount(() => {
         <component :is="buttonTag('md-filled-tonal-button')" v-if="canStop" type="button" class="pc-stop" :disabled="stopping" @click="stopTurn"><Square :slot="material3 ? 'icon' : undefined" :size="material3 ? 18 : 12" aria-hidden="true" />{{ stopping ? '停止中' : '停止' }}</component>
       </template>
       <div v-else class="pc-whisper-input">
+        <span v-if="material3 && attachment" class="pc-attachment-chip">
+          <Paperclip :size="13" aria-hidden="true" />{{ attachment.name }}
+          <button type="button" class="pc-attachment-remove" aria-label="移除附件" @click="attachment = null"><X :size="12" aria-hidden="true" /></button>
+        </span>
         <label v-if="material3" class="pc-whisper-label" for="pc-material-whisper">悄悄对{{ companionName }}说</label>
         <textarea v-if="material3" :readonly="preparingSession || sessionChanging" id="pc-material-whisper" ref="whisperInput" v-model="whisperText" rows="1"
           :aria-label="'悄悄对' + companionName + '说'" placeholder="输入消息…" enterkeyhint="enter"
@@ -814,6 +836,8 @@ onBeforeUnmount(() => {
           :placeholder="'想到什么，直接告诉' + companionName" enterkeyhint="send" @keydown="onWhisperKeydown" />
         <component :is="buttonTag('md-filled-tonal-button')" v-if="canStop" type="button" class="pc-stop" :disabled="stopping" @click="stopTurn"><Square :slot="material3 ? 'icon' : undefined" :size="material3 ? 18 : 12" aria-hidden="true" />{{ stopping ? '停止中' : '停止' }}</component>
         <component :is="buttonTag('md-filled-button')" v-else type="button" :disabled="!whisperText.trim() || material3 && (sessionSwitchLocked || !sessionsReady)" @click="sendWhisper()">发送</component>
+        <component v-if="material3 && attachmentSupported" :is="'md-icon-button'" type="button" class="pc-attach"
+          aria-label="添加文本附件" :disabled="preparingSession || sessionChanging || !!attachment" @click="pickAttachment"><Paperclip :size="20" aria-hidden="true" /></component>
         <component v-if="material3 && dictationSupported" :is="'md-icon-button'" type="button" class="pc-dictate"
           :aria-label="dictating ? '正在聆听' : '语音输入'" :disabled="dictating || preparingSession || sessionChanging" @click="dictate"><Mic :size="20" aria-hidden="true" /></component>
                 <component :is="buttonTag('md-icon-button')" type="button" v-if="!material3 || whisperOpen" class="pc-whisper-close" title="收起" aria-label="收起输入" @click="closeWhisper"><X :size="material3 ? 24 : 18" aria-hidden="true" /></component>
@@ -1264,15 +1288,25 @@ onBeforeUnmount(() => {
   margin: 0; min-height: 48px; border: 0; padding: 0; border-radius: 24px; background: transparent;
 }
 .proactive-companion[data-design-system="material3"] .pc-whisper-input {
-  display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; align-items: center;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto; align-items: center;
   gap: 0 4px; padding: 8px 8px 8px 16px; background: var(--md-sys-color-surface-container-high);
   border: 0; border-radius: 28px; box-shadow: none;
 }
 .proactive-companion[data-design-system="material3"] .pc-whisper-label { grid-column: 1; grid-row: 1; color: var(--md-sys-color-on-surface-variant); font-size: 12px; line-height: 16px; letter-spacing: .4px; }
 .proactive-companion[data-design-system="material3"] .pc-whisper-input input { grid-column: 1; grid-row: 2; min-height: 32px; width: 100%; font-size: 16px; line-height: 24px; letter-spacing: .2px; }
 .proactive-companion[data-design-system="material3"] .pc-whisper-input > :is(md-filled-button, md-filled-tonal-button) { grid-column: 2; grid-row: 1 / 3; min-width: 64px; --md-filled-button-container-height: 48px; }
-.proactive-companion[data-design-system="material3"] .pc-dictate { grid-column: 3; grid-row: 1 / 3; width: 48px; height: 48px; padding: 0 !important; --md-icon-button-icon-size: 24px; }
-.proactive-companion[data-design-system="material3"] .pc-whisper-close { grid-column: 4; grid-row: 1 / 3; width: 48px; height: 48px; padding: 0 !important; --md-icon-button-icon-size: 24px; }
+.proactive-companion[data-design-system="material3"] .pc-attach { grid-column: 3; grid-row: 1 / 3; width: 48px; height: 48px; padding: 0 !important; --md-icon-button-icon-size: 24px; }
+.proactive-companion[data-design-system="material3"] .pc-dictate { grid-column: 4; grid-row: 1 / 3; width: 48px; height: 48px; padding: 0 !important; --md-icon-button-icon-size: 24px; }
+.proactive-companion[data-design-system="material3"] .pc-whisper-close { grid-column: 5; grid-row: 1 / 3; width: 48px; height: 48px; padding: 0 !important; --md-icon-button-icon-size: 24px; }
+.proactive-companion[data-design-system="material3"] .pc-attachment-chip {
+  grid-column: 1 / -1; grid-row: 3; display: inline-flex; align-items: center; gap: 6px;
+  justify-self: start; max-width: 100%; margin-top: 4px; padding: 4px 6px 4px 12px;
+  border-radius: 999px; font-size: 12px; line-height: 18px;
+  color: var(--md-sys-color-on-surface-variant); background: var(--md-sys-color-surface-container-highest);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pc-attachment-remove { display: grid; place-items: center; flex: 0 0 22px; width: 22px; height: 22px; border: 0; border-radius: 50%; background: transparent; color: inherit; cursor: pointer; }
+.pc-attachment-remove:hover { background: rgba(128, 134, 146, .18); }
 .proactive-companion[data-design-system="material3"] .pc-interaction {
   width: 100%; max-width: 620px; justify-self: center; padding: 20px; border-radius: 24px;
   background: var(--md-sys-color-surface-container-low); color: var(--md-sys-color-on-surface);

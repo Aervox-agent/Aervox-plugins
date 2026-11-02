@@ -1312,6 +1312,26 @@ it('fills the draft from the host speech input', async () => {
   expect(wrapper.get('.pc-mobile-status').text()).toBe('已识别，可继续编辑或发送。');
 });
 
+it('attaches a picked text file to the next message and clears it after sending', async () => {
+  const pickTextFile = vi.fn(async () => ({ name: 'notes.md', text: '# 重点\n背熟第三章' }));
+  configureAervoxClient({ sessionId: 'test_initial', platform: {}, transport: {
+    request: request as never, streamTurn: streamTurn as never, observeTurn: observeTurn as never,
+    submitQuestionAnswers: vi.fn(), decideToolApproval: vi.fn(), pickTextFile,
+  } });
+  const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
+  await wrapper.get('md-icon-button[aria-label="添加文本附件"]').trigger('click');
+  await flushPromises();
+  expect(pickTextFile).toHaveBeenCalledTimes(1);
+  expect(wrapper.get('.pc-attachment-chip').text()).toContain('notes.md');
+  await wrapper.get('#pc-material-whisper').setValue('帮我总结');
+  await wrapper.get('md-filled-button').trigger('click');
+  await flushPromises();
+  const sent = request.mock.calls.map((call) => JSON.stringify(call)).join(' ');
+  expect(sent).toContain('背熟第三章');
+  expect(sent).toContain('notes.md');
+  expect(wrapper.find('.pc-attachment-chip').exists()).toBe(false);
+});
+
 it('hides dictation when the host provides no recognizer', async () => {
   const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
   expect(wrapper.find('md-icon-button[aria-label="语音输入"]').exists()).toBe(false);
