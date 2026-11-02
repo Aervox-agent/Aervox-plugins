@@ -197,7 +197,7 @@ describe('mobile read-only history panel', () => {
     expect(history.getPage).toHaveBeenNthCalledWith(2, 'ses_inspected', expect.objectContaining({ limit: 20, cursor: 'older_cursor' }));
     expect(wrapper.text()).toContain('更早这一页'); expect(wrapper.text()).not.toContain('最新这一页');
     expect(button(wrapper, '回到最新记录').exists()).toBe(true);
-    await wrapper.get('select[aria-label="历史每页轮数"]').setValue('1'); await flushPromises();
+    await wrapper.get('select[aria-label="历史每页显示"]').setValue('1'); await flushPromises();
     expect(history.getPage).toHaveBeenNthCalledWith(3, 'ses_inspected', expect.objectContaining({ limit: 1, cursor: undefined }));
     await button(wrapper, '刷新记录').trigger('click'); await flushPromises();
     expect(history.getPage).toHaveBeenNthCalledWith(4, 'ses_inspected', expect.objectContaining({ limit: 1, cursor: undefined }));
