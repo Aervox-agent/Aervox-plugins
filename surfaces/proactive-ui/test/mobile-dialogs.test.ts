@@ -259,7 +259,7 @@ describe('mobile session sharing', () => {
     expect(payload.title).toBe('要分享的会话');
     expect(payload.text).toContain('# 要分享的会话');
     expect(payload.text).toContain('保存的回复');
-    expect(wrapper.text()).toContain('已分享这次对话');
+    expect(wrapper.text()).toContain('已交给系统分享面板');
   });
 
   it('reports a failed share without pretending the conversation left the phone', async () => {
@@ -273,6 +273,6 @@ describe('mobile session sharing', () => {
     await button(wrapper, '分享这次对话').trigger('click');
     await flushPromises();
     expect(wrapper.text()).toContain('分享没有完成');
-    expect(wrapper.text()).not.toContain('已分享这次对话');
+    expect(wrapper.text()).not.toContain('已交给系统分享面板');
   });
 });

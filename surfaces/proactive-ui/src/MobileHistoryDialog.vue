@@ -26,7 +26,7 @@ async function shareSession() {
       getPage: input => createSessionHistoryClient(transport).getPage(props.sessionId, input),
     });
     await transport.shareText({ title: props.title, text: transcript.text });
-    shareFeedback.value = transcript.truncated ? '已分享；内容过多，导出已截断。' : '已分享这次对话。';
+    shareFeedback.value = transcript.truncated ? '已交给系统分享面板；内容较多，导出已截断。' : '已交给系统分享面板。';
   } catch { shareFeedback.value = '分享没有完成，记录仍保留在手机上。'; }
   finally { sharing.value = false; }
 }
