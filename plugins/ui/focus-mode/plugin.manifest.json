@@ -12,6 +12,10 @@
     "tags": [
       "ui"
     ],
+    "targets": [
+      "desktop",
+      "web"
+    ],
     "breaking": false
   },
   "spec": {

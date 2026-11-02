@@ -12,6 +12,11 @@
     "tags": [
       "proactive"
     ],
+    "targets": [
+      "desktop",
+      "web",
+      "cli"
+    ],
     "breaking": false
   },
   "spec": {

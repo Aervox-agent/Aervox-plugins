@@ -12,6 +12,11 @@
     "tags": [
       "workflow"
     ],
+    "targets": [
+      "desktop",
+      "web",
+      "cli"
+    ],
     "breaking": false
   },
   "spec": {

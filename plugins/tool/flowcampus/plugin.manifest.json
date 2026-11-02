@@ -13,6 +13,11 @@
       "campus",
       "planning"
     ],
+    "targets": [
+      "desktop",
+      "web",
+      "cli"
+    ],
     "breaking": false
   },
   "spec": {

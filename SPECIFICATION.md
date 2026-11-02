@@ -54,6 +54,24 @@ Tool `name` 使用 `<slug>_<action>`，全局名称须唯一；宿主对工具 *
 
 默认 Skill 名称为 pluginId，辅助技能使用 `<plugin-id>:<sub-skill>`。逻辑名称与磁盘目录分开，共享编码函数将冒号编码为 `%3A`，避免 Windows 路径问题；Manifest 命名空间必须匹配归属插件。新生态 Page ID 使用小写 kebab/snake，作者门禁检查；运行时仍兼容历史大小写，入口位于对应 `pages/<page-id>/`。Config Key 使用 camelCase，工具使用小写 snake_case，均执行作者命名检查。
 
+### 2.5 宿主端适配（targets）
+
+`metadata.targets` 声明插件**面向哪些宿主端**，与冻结的 `category`（能力分类）正交，属于可演进元数据（语义同 `tags`）：
+
+| 端 | 含义 |
+|---|---|
+| `desktop` | 桌面壳（Electron）与内置 API 宿主 |
+| `mobile` | Android 固定 APK 组合（ADR-022） |
+| `web` | 浏览器访问的托管工作台 |
+| `cli` | 命令行宿主 |
+
+规则：
+
+1. 字段可选；**缺省 = 全端可用**。仅端专用插件必须显式声明。
+2. 取值唯一不重复（共享校验器枚举校验）；追加端递增 MINOR，移除端（对既有端用户即破坏）递增 MAJOR。
+3. 与 `category` 一样，`targets` 不授予任何权限：某端"可用"仍以该端真实装配与验收为准。
+4. 集合仓的 `surfaces/`（第一方界面包）不是清单插件，端归属见 [`surfaces/README.md`](surfaces/README.md)。
+
 ## 3. 文件组织与分发
 
 ### 3.1 集合仓布局

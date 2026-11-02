@@ -12,6 +12,11 @@
     "tags": [
       "bot"
     ],
+    "targets": [
+      "desktop",
+      "web",
+      "cli"
+    ],
     "breaking": false
   },
   "spec": {},

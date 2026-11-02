@@ -12,6 +12,11 @@
     "tags": [
       "tool"
     ],
+    "targets": [
+      "desktop",
+      "web",
+      "cli"
+    ],
     "breaking": false
   },
   "spec": {
