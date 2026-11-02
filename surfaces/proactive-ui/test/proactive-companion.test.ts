@@ -1260,3 +1260,39 @@ it('renders a finished mobile reply as safe markdown instead of raw syntax', asy
   expect(rendered.find('img').exists()).toBe(false);
   expect(rendered.text()).not.toContain('**');
 });
+
+it('reads the visible reply through the host speech engine', async () => {
+  const speakText = vi.fn(async () => {});
+  configureAervoxClient({ sessionId: 'test_initial', platform: {}, transport: {
+    request: request as never, streamTurn: streamTurn as never, observeTurn: observeTurn as never,
+    submitQuestionAnswers: vi.fn(), decideToolApproval: vi.fn(), speakText,
+  } });
+  const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
+  const speak = wrapper.get('md-icon-button[aria-label="朗读这次回复"]');
+  await vi.waitFor(() => expect(speak.attributes('disabled')).toBe('false'), { timeout: 4000 });
+  const shown = wrapper.get('.pc-dialogue-text').text().trim();
+  await speak.trigger('click');
+  await flushPromises();
+  expect(speakText).toHaveBeenCalledTimes(1);
+  expect((speakText.mock.calls[0]![0] as { text: string }).text).toBe(shown);
+  expect(wrapper.get('.pc-copy-feedback').text()).toBe('正在朗读这次回复。');
+});
+
+it('hides read-aloud when the host provides no speech engine', async () => {
+  const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
+  expect(wrapper.find('md-icon-button[aria-label="朗读这次回复"]').exists()).toBe(false);
+});
+
+it('explains a missing speech engine instead of pretending it read aloud', async () => {
+  const speakText = vi.fn(async () => { throw new Error('SPEECH_UNAVAILABLE'); });
+  configureAervoxClient({ sessionId: 'test_initial', platform: {}, transport: {
+    request: request as never, streamTurn: streamTurn as never, observeTurn: observeTurn as never,
+    submitQuestionAnswers: vi.fn(), decideToolApproval: vi.fn(), speakText,
+  } });
+  const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
+  const speak = wrapper.get('md-icon-button[aria-label="朗读这次回复"]');
+  await vi.waitFor(() => expect(speak.attributes('disabled')).toBe('false'), { timeout: 4000 });
+  await speak.trigger('click');
+  await flushPromises();
+  expect(wrapper.get('.pc-copy-feedback').text()).toBe('这台手机没有可用的朗读引擎。');
+});

@@ -15,7 +15,7 @@ import { ExtensionSlot } from '@aervox/ui/primitives';
 import { AervoxBrandMark, PetWithFallback, UserQuestionComposer, readCompanionIdentity, useSessionDraft } from '@aervox/ui/companion';
 import { AervoxHttpError, createConversationController, getClientTransport, useAervoxApi, useAervoxPlugins, useAervoxSessions } from '@aervox/api-client';
 import { createUIRegistry, provideUIRegistry, createWorkbenchPluginRuntime, createPluginEventBus, createPluginStateStore, provideUIPluginContext, resolveOutgoingMessage, type BuiltinUIPlugin, type UIPluginContext } from '@aervox/ui/plugin-api';
-import { ArrowUpRight, Copy, History, MessagesSquare, MessageSquare, RotateCcw, Settings, Square, X } from 'lucide-vue-next';
+import { ArrowUpRight, Copy, History, MessagesSquare, MessageSquare, RotateCcw, Settings, Square, Volume2, X } from 'lucide-vue-next';
 import type { AskUserQuestionAnswerItem } from '@aervox/contracts';
 import { useDialogueTyper } from './dialogue-typer';
 import MobileSettingsDialog from './MobileSettingsDialog.vue';
@@ -113,6 +113,25 @@ async function copyReply() {
   }
   clearTimeout(copyTimer);
   copyTimer = setTimeout(() => { copyFeedback.value = ''; }, 4000);
+}
+const speechSupported = typeof getClientTransport().speakText === 'function';
+const speechFeedback = ref('');
+let speechTimer: ReturnType<typeof setTimeout> | undefined;
+/** Reads the reply that is already on screen; the phone owns the speech engine. */
+async function readAloud() {
+  const text = dialogueText.value;
+  if (!text.trim() || dialogueTyping.value || !speechSupported) return;
+  speechFeedback.value = '';
+  try {
+    await getClientTransport().speakText!({ text });
+    speechFeedback.value = '正在朗读这次回复。';
+  } catch (error) {
+    speechFeedback.value = error instanceof Error && error.message === 'SPEECH_UNAVAILABLE'
+      ? '这台手机没有可用的朗读引擎。'
+      : '朗读没有开始，可以稍后再试。';
+  }
+  clearTimeout(speechTimer);
+  speechTimer = setTimeout(() => { speechFeedback.value = ''; }, 4000);
 }
 const DEVICE_TOOL_LABELS: Record<string, string> = {
   device_tap: '正在点击屏幕…', device_swipe: '正在滑动屏幕…', device_key: '正在按键…',
@@ -627,6 +646,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   whisperDisposed = true;
   clearTimeout(copyTimer);
+  clearTimeout(speechTimer);
   whisperResizeObserver?.disconnect();
   whisperResizeObserver = undefined;
   inputLayer?.dispose(); inputLayer = undefined;
@@ -683,8 +703,11 @@ onBeforeUnmount(() => {
           <span class="pc-dialogue-ctx">{{ dialogueCtx }}</span>
           <span v-if="toolActivity" class="pc-dialogue-ctx pc-tool-activity" role="status">{{ toolActivity }}</span>
           <span v-if="copyFeedback" class="pc-dialogue-ctx pc-copy-feedback" role="status">{{ copyFeedback }}</span>
+          <span v-if="speechFeedback" class="pc-dialogue-ctx pc-copy-feedback" role="status">{{ speechFeedback }}</span>
           <component v-if="material3" :is="'md-icon-button'" class="pc-copy" type="button" aria-label="复制这次回复"
             :disabled="dialogueTyping || !dialogueText.trim()" @click="copyReply"><Copy :size="18" aria-hidden="true" /></component>
+          <component v-if="material3 && speechSupported" :is="'md-icon-button'" class="pc-speak" type="button" aria-label="朗读这次回复"
+            :disabled="dialogueTyping || !dialogueText.trim()" @click="readAloud"><Volume2 :size="18" aria-hidden="true" /></component>
         </div>
       </div>
       <Teleport :to="mobileFeedbackRegion" :disabled="!material3 || !mobileFeedbackRegion">
@@ -963,6 +986,7 @@ onBeforeUnmount(() => {
 .pc-tool-activity { flex: 0 0 auto; color: var(--md-sys-color-primary, var(--pc-ink-2)); }
 .pc-copy-feedback { flex: 0 0 auto; color: var(--md-sys-color-primary, var(--pc-ink-2)); }
 .pc-copy { flex: 0 0 48px; width: 48px; height: 48px; margin-inline-start: auto; }
+.pc-speak { flex: 0 0 48px; width: 48px; height: 48px; }
 .pc-dialogue-foot button { min-width: 44px; min-height: 44px; }
 .pc-feedback {
   display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px;
