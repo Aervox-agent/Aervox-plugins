@@ -1157,6 +1157,18 @@ onBeforeUnmount(() => {
 .pc-viewport--short .pc-choices,
 .pc-viewport--short .pc-plugin-cards { grid-column: auto; grid-row: auto; }
 .proactive-companion[data-platform="mobile"].pc-viewport--short .pc-dialogue { margin-block-start: 0; }
+.proactive-companion.pc-viewport--short .pc-whisper-label,
+.pc-viewport--short .pc-whisper-label { display: none; }
+.proactive-companion.pc-viewport--short .pc-whisper-input textarea,
+.proactive-companion.pc-viewport--short .pc-whisper-input input,
+.pc-viewport--short .pc-whisper-input textarea,
+.pc-viewport--short .pc-whisper-input input { grid-row: 1; }
+.proactive-companion.pc-viewport--short .pc-whisper-input,
+.pc-viewport--short .pc-whisper-input { padding: 6px 8px 6px 12px; }
+.proactive-companion.pc-viewport--short .pc-dialogue-box,
+.pc-viewport--short .pc-dialogue-box { padding: 12px 16px; border-radius: 16px; }
+.proactive-companion.pc-viewport--short .pc-dialogue-text,
+.pc-viewport--short .pc-dialogue-text { font-size: 14px; line-height: 22px; }
 @media (max-height: 520px) {
   .pc-stage { display: none; }
   .pc-content {
@@ -1249,14 +1261,15 @@ onBeforeUnmount(() => {
   margin: 0; min-height: 48px; border: 0; padding: 0; border-radius: 24px; background: transparent;
 }
 .proactive-companion[data-design-system="material3"] .pc-whisper-input {
-  display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; align-items: center;
   gap: 0 4px; padding: 8px 8px 8px 16px; background: var(--md-sys-color-surface-container-high);
   border: 0; border-radius: 28px; box-shadow: none;
 }
 .proactive-companion[data-design-system="material3"] .pc-whisper-label { grid-column: 1; grid-row: 1; color: var(--md-sys-color-on-surface-variant); font-size: 12px; line-height: 16px; letter-spacing: .4px; }
 .proactive-companion[data-design-system="material3"] .pc-whisper-input input { grid-column: 1; grid-row: 2; min-height: 32px; width: 100%; font-size: 16px; line-height: 24px; letter-spacing: .2px; }
 .proactive-companion[data-design-system="material3"] .pc-whisper-input > :is(md-filled-button, md-filled-tonal-button) { grid-column: 2; grid-row: 1 / 3; min-width: 64px; --md-filled-button-container-height: 48px; }
-.proactive-companion[data-design-system="material3"] .pc-whisper-close { grid-column: 3; grid-row: 1 / 3; width: 48px; height: 48px; padding: 0 !important; --md-icon-button-icon-size: 24px; }
+.proactive-companion[data-design-system="material3"] .pc-dictate { grid-column: 3; grid-row: 1 / 3; width: 48px; height: 48px; padding: 0 !important; --md-icon-button-icon-size: 24px; }
+.proactive-companion[data-design-system="material3"] .pc-whisper-close { grid-column: 4; grid-row: 1 / 3; width: 48px; height: 48px; padding: 0 !important; --md-icon-button-icon-size: 24px; }
 .proactive-companion[data-design-system="material3"] .pc-interaction {
   width: 100%; max-width: 620px; justify-self: center; padding: 20px; border-radius: 24px;
   background: var(--md-sys-color-surface-container-low); color: var(--md-sys-color-on-surface);
