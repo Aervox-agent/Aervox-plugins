@@ -449,7 +449,8 @@ const whisperText = ref('');
 // bridge; a text file is an honest first slice of the attachment story).
 const attachment = ref<{ name: string; text: string } | null>(null);
 const attachmentSupported = typeof clientTransport.pickTextFile === 'function';
-const attachmentKey = () => `aervox-attachment:${sessions.activeSessionId.value || 'none'}`;
+// Match the host draft key namespace so the native cache allowlist accepts it.
+const attachmentKey = () => `aervox-mobile-draft:attachment-${sessions.activeSessionId.value || 'none'}`;
 function persistAttachment() {
   try {
     const target = props.draftStorage ?? (typeof localStorage === 'undefined' ? undefined : localStorage);
@@ -474,9 +475,10 @@ async function pickAttachment() {
   if (!attachmentSupported) return;
   try {
     const picked = await clientTransport.pickTextFile!();
-    const budget = 32 * 1024;
+    // Keep the JSON envelope under the host draft value cap (32 KiB).
+    const budget = 28 * 1024;
     const text = picked.text.length > budget
-      ? `${picked.text.slice(0, budget)}\n（附件超过 32 KiB，已截断）`
+      ? `${picked.text.slice(0, budget)}\n（附件超过 28 KiB，已截断）`
       : picked.text;
     attachment.value = { name: picked.name, text };
     persistAttachment();
