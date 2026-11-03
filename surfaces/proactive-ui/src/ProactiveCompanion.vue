@@ -10,7 +10,7 @@
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue';
 import { useUISurfaceContext } from '@aervox/ui-host';
-import { useMaterial3, useMobileBackNavigation } from '@aervox/ui/material3';
+import { useMaterial3 } from '@aervox/ui/material3';
 import { ExtensionSlot } from '@aervox/ui/primitives';
 import { AervoxBrandMark, PetWithFallback, UserQuestionComposer, readCompanionIdentity, useSessionDraft } from '@aervox/ui/companion';
 import { AervoxHttpError, createConversationController, getClientTransport, useAervoxApi, useAervoxPlugins, useAervoxSessions } from '@aervox/api-client';
@@ -43,9 +43,9 @@ const pluginApi = useAervoxPlugins();
 const learning = useAervoxApi();
 const pluginLoadError = ref(false);
 const material3 = useMaterial3();
-const mobileBack = useMobileBackNavigation();
 const mobileScreen = ref<HTMLElement>();
 const mobileFeedbackRegion = ref<HTMLElement>();
+const mobileSuggestionRegion = ref<HTMLElement>();
 // The Android composition root registers the official Material Web elements.
 // Other hosts keep their existing native controls and visual language.
 const buttonTag = (materialTag: string) => material3 ? materialTag : 'button';
@@ -66,12 +66,25 @@ const sessionManageError = ref<string | null>(null);
 watch(sessionsOpen, open => { if (open) sessionManageError.value = null; });
 const mobileSessionTitle = computed(() => sessions.activeSession.value?.title ?? (!sessionsReady.value ? '正在读取会话…' : sessionListError.value ? '会话读取失败' : sessions.activeSessionId.value && sessions.activeSessionId.value !== 'web_default' ? '当前会话不可用' : '新对话'));
 
+/* ---------- 卡片堆叠（对话 / 会话 / 工具，横向滑动切换） ---------- */
+const deckTrack = ref<HTMLDivElement>();
+const deckIndex = ref(0);
+const deckSize = computed(() => material3 ? 3 : 1);
+function onDeckScroll() {
+  const track = deckTrack.value;
+  if (!track || !track.clientWidth) return;
+  deckIndex.value = Math.min(Math.max(Math.round(track.scrollLeft / track.clientWidth), 0), deckSize.value - 1);
+}
+function goDeck(index: number) {
+  const track = deckTrack.value;
+  if (!track) return;
+  track.scrollTo({ left: index * track.clientWidth, behavior: 'smooth' });
+  deckIndex.value = index;
+}
+
 /* ---------- 对话盒 ---------- */
 const identity = readCompanionIdentity();
 const companionName = ref(identity.companionName);
-// The first-run setup hint is state, not greeting copy: it renders only while
-// no model is configured and is strictly absent otherwise.
-const showSetupHint = ref(false);
 const greeting = '你好' + (identity.userAddress === '你' ? '' : '，' + identity.userAddress) + '，我是' + identity.companionName
   + (props.nativeRuntime ? '。想聊什么，直接告诉我。' : '。今天想继续昨天的进度，还是先安静专注一会儿？');
 const dialogueCtx = ref(props.nativeRuntime ? '本机对话' : '主动陪伴 · 每日开场');
@@ -120,11 +133,6 @@ async function copyReply() {
 // inject() only resolves during setup; event handlers must reuse this capture.
 const clientTransport = getClientTransport();
 const dictationSupported = typeof clientTransport.speechInput === 'function';
-if (props.nativeRuntime) {
-  void clientTransport.request<{ configured?: boolean }>('GET', '/v1/models/summary')
-    .then(summary => { showSetupHint.value = summary?.configured === false; })
-    .catch(() => { showSetupHint.value = true; });
-}
 const dictating = ref(false);
 const dictationFeedback = ref('');
 let dictationTimer: ReturnType<typeof setTimeout> | undefined;
@@ -492,11 +500,8 @@ const whisperInput = ref<HTMLInputElement | HTMLTextAreaElement>();
 const whisperPill = ref<HTMLButtonElement>();
 const drafts = useSessionDraft({ input: whisperText, sessionId: sessions.activeSessionId, storage: props.draftStorage,
   enabled: computed(() => material3), onRestore: () => { if (!sessionsOpen.value && !historyOpen.value && !settingsOpen.value) whisperOpen.value = true; } });
-let inputLayer: ReturnType<NonNullable<typeof mobileBack>['registerLayer']> | undefined;
-watch(whisperOpen, open => {
-  if (open && material3) inputLayer ??= mobileBack?.registerLayer({ onBack: () => { void closeWhisper(); } });
-  else { inputLayer?.close(); inputLayer = undefined; }
-}, { immediate: true });
+// 手机输入条常驻（没有收起态），因此不再注册返回层：返回键应交给当前弹层，
+// 而不是收起一个永远可见的输入框。
 function resizeWhisper() {
   if (!material3 || !(whisperInput.value instanceof HTMLTextAreaElement)) return;
   const input = whisperInput.value;
@@ -537,6 +542,8 @@ async function openWhisper() {
   whisperOpen.value = true;
   await nextTick();
   whisperInput.value?.focus();
+  // 手机输入条常驻：再次聚焦也要按当前内容重测高度（草稿恢复、窗口宽度变化后同理）。
+  scheduleWhisperResize();
 }
 async function closeWhisper() {
   whisperOpen.value = false;
@@ -737,7 +744,6 @@ onBeforeUnmount(() => {
   clearTimeout(dictationTimer);
   whisperResizeObserver?.disconnect();
   whisperResizeObserver = undefined;
-  inputLayer?.dispose(); inputLayer = undefined;
   unsubscribeConversation(); turnController.dispose();
   pluginRuntime?.destroy(); registry.dispose(); pluginState.dispose();
   finish();
@@ -761,6 +767,8 @@ onBeforeUnmount(() => {
     <header class="pc-header">
       <div class="pc-brand"><AervoxBrandMark class="pc-brand-mark" :size="28" aria-hidden="true" /><span>思隅</span></div>
       <div class="pc-top-right">
+        <component v-if="material3" :is="'md-icon-button'" class="pc-quiet-btn" type="button" title="回看当前会话" aria-label="回看当前会话" :disabled="!sessions.activeSession.value" @click="openMobileHistory()"><History :size="24" aria-hidden="true" /></component>
+        <component v-if="material3" :is="'md-icon-button'" class="pc-quiet-btn" type="button" title="设置" aria-label="打开设置" @click="settingsOpen = true"><Settings :size="24" aria-hidden="true" /></component>
         <component :is="buttonTag('md-icon-button')" v-if="!material3" class="pc-quiet-btn" type="button" title="设置" aria-label="打开设置" @click="settingsOpen = true"><Settings :size="material3 ? 24 : 18" aria-hidden="true" /></component>
         <component :is="buttonTag('md-icon-button')" v-if="surfaceNavigation && !material3" class="pc-quiet-btn" type="button" title="回到完整工作台" aria-label="回到完整工作台" @click="backToDefaultSurface"><ArrowUpRight :size="material3 ? 24 : 19" aria-hidden="true" /></component>
       </div>
@@ -773,9 +781,12 @@ onBeforeUnmount(() => {
         <div class="pc-pet-status">{{ companionStatus }}</div>
         <PetWithFallback :show-fallback-while-loading="material3" />
       </div>
+      <!-- 建议贴着角色出现（手机）：说出口的建议，而不是页面底部的一条横幅。 -->
+      <div v-if="material3" ref="mobileSuggestionRegion" class="pc-stage-suggestions" />
     </div>
 
-    <section class="pc-dialogue" aria-label="陪伴对话">
+    <div class="pc-deck-track" ref="deckTrack" @scroll.passive="onDeckScroll">
+    <section class="pc-dialogue pc-deck-slide" aria-label="陪伴对话">
       <div class="pc-dialogue-name">{{ companionName }}</div>
       <div class="pc-dialogue-box">
         <p v-if="waitingForReply" class="pc-dialogue-waiting" role="status">
@@ -798,7 +809,6 @@ onBeforeUnmount(() => {
             :disabled="dialogueTyping || !dialogueText.trim()" @click="readAloud"><Volume2 :size="18" aria-hidden="true" /></component>
         </div>
       </div>
-      <p v-if="material3 && showSetupHint" class="pc-setup-hint" role="note">首次使用请在设置中配置模型服务。</p>
       <Teleport :to="mobileFeedbackRegion" :disabled="!material3 || !mobileFeedbackRegion">
       <div v-if="turnFeedback" class="pc-feedback" :data-kind="turnFeedback.kind" role="status">
         <span>{{ turnFeedback.message }}</span>
@@ -821,6 +831,51 @@ onBeforeUnmount(() => {
       </Teleport>
     </section>
 
+    <section v-if="material3" class="pc-deck-slide" aria-label="会话">
+      <div class="pc-dialogue-name">会话</div>
+      <div class="pc-dialogue-box pc-deck-box">
+        <div class="pc-deck-head">
+          <span class="pc-deck-current">{{ mobileSessionTitle }}</span>
+          <component :is="'md-filled-tonal-button'" type="button" class="pc-deck-new" :disabled="sessionSwitchLocked || sessions.loading.value" @click="createMobileSession()">新建对话</component>
+        </div>
+        <ul v-if="sessions.sessions.value.length" class="pc-deck-sessions">
+          <li v-for="item in sessions.sessions.value.slice(0, 3)" :key="item.id">
+            <button type="button" class="pc-deck-session" :class="{ 'is-active': item.id === sessions.activeSessionId.value }"
+              :disabled="sessionSwitchLocked" @click="selectMobileSession(item.id)">
+              <span class="pc-deck-session-title">{{ item.title }}</span>
+              <span v-if="item.id === sessions.activeSessionId.value" class="pc-deck-session-mark">当前</span>
+            </button>
+          </li>
+        </ul>
+        <p v-else class="pc-deck-empty">{{ sessions.loading.value ? '正在读取会话…' : '还没有已保存的会话。' }}</p>
+        <div class="pc-deck-foot">
+          <component :is="'md-text-button'" type="button" aria-label="会话列表" @click="sessionsOpen = true">全部会话</component>
+        </div>
+      </div>
+    </section>
+
+    <section v-if="material3" class="pc-deck-slide" aria-label="工具">
+      <div class="pc-dialogue-name">工具</div>
+      <div class="pc-dialogue-box pc-deck-box pc-deck-box--tools">
+        <div class="pc-deck-tools">
+          <button v-if="attachmentSupported" type="button" class="pc-home-tool" aria-label="添加文本附件"
+            :disabled="preparingSession || sessionChanging || !!attachment" @click="pickAttachment">
+            <Paperclip :size="20" aria-hidden="true" /><span>{{ attachment ? '已附加文件' : '附加文件' }}</span>
+          </button>
+          <button v-if="dictationSupported" type="button" class="pc-home-tool" :aria-label="dictating ? '正在聆听' : '语音输入'"
+            :disabled="dictating || preparingSession || sessionChanging" @click="dictate">
+            <Mic :size="20" aria-hidden="true" /><span>{{ dictating ? '正在聆听…' : '语音输入' }}</span>
+          </button>
+        </div>
+      </div>
+    </section>
+    </div>
+    <div v-if="material3" class="pc-deck-dots" role="tablist" aria-label="卡片切换">
+      <button v-for="(label, index) in ['对话', '会话', '工具']" :key="label" type="button" role="tab"
+        class="pc-deck-dot" :class="{ 'is-active': deckIndex === index }" :aria-selected="deckIndex === index"
+        :aria-label="'切换到' + label" @click="goDeck(index)" />
+    </div>
+
     <section v-if="conversationState.question" class="pc-interaction" aria-label="回答问题">
       <UserQuestionComposer :question-data="conversationState.question" :submitting="interactionBusy" @submit="answerQuestion" />
     </section>
@@ -830,6 +885,7 @@ onBeforeUnmount(() => {
       <component :is="buttonTag('md-text-button')" type="button" :disabled="interactionBusy || sending" @click="decideApproval('denied')">拒绝</component>
     </section>
 
+    <Teleport :to="mobileSuggestionRegion" :disabled="!material3 || !mobileSuggestionRegion">
     <section v-if="!whisperOpen && suggestions.length" class="pc-choices" aria-label="今日建议">
       <component :is="buttonTag('button')"
         v-for="(card, index) in suggestions"
@@ -845,6 +901,7 @@ onBeforeUnmount(() => {
         <span class="pc-choice-reason">{{ card.reason }}</span>
       </component>
     </section>
+    </Teleport>
     <ExtensionSlot name="companion:cards" wrapper-class="pc-plugin-cards" />
     <p v-if="pluginLoadError" class="pc-mobile-session-feedback" role="alert">扩展加载失败。<button type="button" @click="refreshPluginUI().catch(() => undefined)">重试加载</button></p>
     </main>
@@ -854,11 +911,6 @@ onBeforeUnmount(() => {
     <p v-if="preparingSession || sessionChanging" class="pc-mobile-preparing" role="status">正在准备新对话，草稿会保留…</p>
     <p v-if="material3 && sessionFeedback" class="pc-mobile-session-feedback" role="alert">{{ sessionFeedback }}</p>
     <p v-if="material3 && dictationFeedback" class="pc-mobile-status" role="status">{{ dictationFeedback }}</p>
-    <nav v-if="material3" class="pc-mobile-actions" aria-label="移动端操作">
-      <component :is="'md-text-button'" type="button" aria-label="会话列表" @click="sessionsOpen = true"><MessagesSquare slot="icon" :size="20" />会话</component>
-      <component :is="'md-text-button'" type="button" aria-label="回看当前会话" :disabled="!sessions.activeSession.value" @click="openMobileHistory()"><History slot="icon" :size="20" />回看</component>
-      <component :is="'md-icon-button'" type="button" aria-label="打开设置" @click="settingsOpen = true"><Settings :size="24" /></component>
-    </nav>
     <aside class="pc-whisper" :class="{ 'pc-whisper--open': whisperOpen }" aria-label="对话输入">
       <template v-if="!whisperOpen && !material3">
         <component :is="buttonTag('md-filled-tonal-button')" ref="whisperPill" type="button" class="pc-whisper-pill" @click="openWhisper"><MessageSquare :slot="material3 ? 'icon' : undefined" :size="material3 ? 20 : 15" aria-hidden="true" /><span>悄悄对{{ companionName }}说…</span></component>
@@ -877,11 +929,7 @@ onBeforeUnmount(() => {
           :placeholder="'想到什么，直接告诉' + companionName" enterkeyhint="send" @keydown="onWhisperKeydown" />
         <component :is="buttonTag('md-filled-tonal-button')" v-if="canStop" type="button" class="pc-stop" :disabled="stopping" @click="stopTurn"><Square :slot="material3 ? 'icon' : undefined" :size="material3 ? 18 : 12" aria-hidden="true" />{{ stopping ? '停止中' : '停止' }}</component>
         <component :is="buttonTag('md-filled-button')" v-else type="button" :disabled="!whisperText.trim() || material3 && (sessionSwitchLocked || !sessionsReady)" @click="sendWhisper()">发送</component>
-        <component v-if="material3 && attachmentSupported" :is="'md-icon-button'" type="button" class="pc-attach"
-          aria-label="添加文本附件" :disabled="preparingSession || sessionChanging || !!attachment" @click="pickAttachment"><Paperclip :size="20" aria-hidden="true" /></component>
-        <component v-if="material3 && dictationSupported" :is="'md-icon-button'" type="button" class="pc-dictate"
-          :aria-label="dictating ? '正在聆听' : '语音输入'" :disabled="dictating || preparingSession || sessionChanging" @click="dictate"><Mic :size="20" aria-hidden="true" /></component>
-                <component :is="buttonTag('md-icon-button')" type="button" v-if="!material3 || whisperOpen" class="pc-whisper-close" title="收起" aria-label="收起输入" @click="closeWhisper"><X :size="material3 ? 24 : 18" aria-hidden="true" /></component>
+                <component :is="buttonTag('md-icon-button')" type="button" v-if="!material3" class="pc-whisper-close" title="收起" aria-label="收起输入" @click="closeWhisper"><X :size="18" aria-hidden="true" /></component>
       </div>
     </aside>
     <MobileSessionsDialog v-if="material3" v-model="sessionsOpen" :sessions="sessions.sessions.value" :active-session-id="sessions.activeSessionId.value"
@@ -1002,23 +1050,86 @@ onBeforeUnmount(() => {
   .proactive-companion[data-platform="mobile"] .pc-stage {
     position: relative;
     z-index: 0;
+    /* 舞台就是「角色可见窗口」：盒子比舞台高（人物因此被放大），
+       超出部分在舞台底边裁掉，而卡片正好压在这条裁切线上。
+       这样角色不会半透明地透出卡面，也不会从卡片下方露腿。 */
+    align-items: start;
+    overflow: hidden;
+    height: clamp(280px, 45dvh, 480px);
+  }
+  /* 建议贴在角色身上说话：悬浮在卡片上缘的一条玻璃建议，不再占页面末尾的位置。
+     bottom 需大于卡片上提量里的名牌区，否则会被卡片扑住。 */
+  .proactive-companion[data-platform="mobile"] .pc-stage-suggestions {
+    position: absolute; inset-inline: 2px; bottom: 60px;
+    display: grid; gap: 8px; z-index: 2;
+    pointer-events: none;
+  }
+  .proactive-companion[data-platform="mobile"] .pc-stage-suggestions .pc-choices {
+    display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px;
+    margin: 0; pointer-events: auto;
+  }
+  .proactive-companion[data-platform="mobile"] .pc-stage-suggestions .pc-choice {
+    min-height: 0; padding: 8px 14px; border-radius: 16px;
+    flex-direction: row; align-items: center; gap: 10px;
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.03)),
+      color-mix(in srgb, var(--pc-card, #171b22) 88%, transparent);
+    backdrop-filter: blur(14px);
+    border: 1px solid var(--pc-line, rgba(255,255,255,.10));
+    box-shadow: 0 10px 26px -14px rgba(0,0,0,.5);
+  }
+  .proactive-companion[data-platform="mobile"] .pc-stage-suggestions .pc-choice-label { flex: 0 0 auto; font-size: 14px; line-height: 20px; }
+  .proactive-companion[data-platform="mobile"] .pc-stage-suggestions .pc-choice-reason {
+    flex: 1 1 auto; min-width: 0; margin-top: 0;
+    font-size: 12px; line-height: 18px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .proactive-companion[data-platform="mobile"] .pc-pet-wrap {
-    /* 角色撑满舞台但不让舞台吃掉首屏预算：问候态（卡片脚行 + 提示行 + 接续卡）
-       必须收进内容区折叠线以上，否则会被底栏裁成半截。 */
-    width: min(400px, 94vw);
-    height: clamp(300px, 42dvh, 430px);
+    /* 角色按画布高度等比缩放到撑满（fitLive2DModelToViewport 只吃高度）：
+       所以这里给得比舞台高，人物就更大；多出来的部分由舞台裁掉。 */
+    width: min(420px, 96vw);
+    height: clamp(440px, 72dvh, 720px);
   }
   /* Pixi sets an inline touch-action:none. Keep vertical page gestures while
    * retaining taps on the character in the larger phone stage. */
   .proactive-companion[data-platform="mobile"] .pc-pet-wrap :deep(canvas) {
     touch-action: pan-y pinch-zoom !important;
   }
+  /* 卡片上提量 = 间隙 + 名牌高度 + 压住裁切线的重叠量（约 16px），
+     让卡片盒子的上缘正好落在舞台裁切线略上方，盖住角色的断口。 */
+  .proactive-companion[data-platform="mobile"] .pc-deck-track {
+    display: flex; gap: 12px;
+    overflow-x: auto; overscroll-behavior-x: contain;
+    scroll-snap-type: x mandatory; scrollbar-width: none;
+    margin-block-start: clamp(-260px, -9dvh, -40px);
+    padding-block-end: 2px;
+    /* 三张卡统一尺寸：切换时不再因为内容多少而跳动，长内容在卡内滚动。 */
+    height: clamp(190px, 28dvh, 250px);
+  }
+  .proactive-companion[data-platform="mobile"] .pc-deck-slide { height: 100%; }
+  /* 卡片是纵向 flex，名牌作为 flex 项会被拉满整行——收成内容宽度的胶囊。 */
+  .proactive-companion[data-platform="mobile"] .pc-deck-slide > .pc-dialogue-name { align-self: flex-start; }
+  .proactive-companion[data-platform="mobile"] .pc-deck-track::-webkit-scrollbar { display: none; }
+  .proactive-companion[data-platform="mobile"] .pc-deck-slide {
+    flex: 0 0 100%; min-width: 0; display: flex; flex-direction: column;
+    scroll-snap-align: center; scroll-snap-stop: always;
+  }
+  .proactive-companion[data-platform="mobile"] .pc-deck-box {
+    flex: 1 1 auto; min-height: 0; overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  /* 卡片高度固定后，长内容在卡内滚动：对话正文滚正文，会话列表滚列表，页脚常驻。 */
+  .proactive-companion[data-platform="mobile"] .pc-deck-slide > .pc-dialogue-box:not(.pc-deck-box) {
+    flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain;
+  }
+  .proactive-companion[data-platform="mobile"] .pc-deck-sessions {
+    flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain;
+  }
+  .proactive-companion[data-platform="mobile"] .pc-deck-dots { display: flex; justify-content: center; gap: 2px; }
   .proactive-companion[data-platform="mobile"] .pc-dialogue {
     position: relative;
     z-index: 1;
-    /* 对话层覆盖角色下半身；叠放深度保持 ~22dvh，首屏腾挪主要靠舞台高度预算。 */
-    margin-block-start: clamp(-220px, -24dvh, -120px);
+    margin-block-start: 0;
   }
 }
 .pc-pet-wrap :deep(.aervox-live2d-pet) { min-height: 0; }
@@ -1287,9 +1398,14 @@ onBeforeUnmount(() => {
   width: 48px; height: 48px; flex-basis: 48px; border-radius: 50%; padding: 0;
   background: transparent; color: var(--md-sys-color-on-surface-variant);
 }
-.proactive-companion[data-design-system="material3"] .pc-content { gap: 24px; padding-block: 20px 24px; }
-.proactive-companion[data-design-system="material3"] .pc-stage { padding-top: 24px; }
-.proactive-companion[data-design-system="material3"] .pc-pet-status { font-size: 12px; line-height: 16px; font-weight: 500; letter-spacing: .5px; }
+.proactive-companion[data-design-system="material3"] .pc-content { gap: 14px; padding-block: 14px 14px; }
+.proactive-companion[data-design-system="material3"] .pc-stage { padding-top: 0; }
+.proactive-companion[data-design-system="material3"] .pc-pet-status {
+  top: 2px; padding: 2px 10px; border-radius: 999px;
+  background: color-mix(in srgb, var(--pc-bg, #101318) 70%, transparent);
+  backdrop-filter: blur(8px);
+  font-size: 12px; line-height: 16px; font-weight: 500; letter-spacing: .5px;
+}
 .proactive-companion[data-design-system="material3"] .pc-pet-status::before { background: var(--md-sys-color-outline); }
 .proactive-companion[data-design-system="material3"] .pc-dialogue-name { margin: 0 16px 8px; font-size: 14px; line-height: 20px; font-weight: 500; letter-spacing: .1px; }
 .proactive-companion[data-design-system="material3"] .pc-dialogue-name::after { display: none; }
@@ -1319,7 +1435,7 @@ onBeforeUnmount(() => {
 }
 .proactive-companion[data-design-system="material3"] .pc-feedback[data-kind$="error"] { background: var(--md-sys-color-error-container); color: var(--md-sys-color-on-error-container); }
 .proactive-companion[data-design-system="material3"] .pc-feedback-action { min-height: 48px; padding: 0; background: transparent; font-weight: 500; border-radius: 24px; }
-.proactive-companion[data-design-system="material3"] .pc-whisper { gap: 8px; align-items: center; background: var(--md-sys-color-surface); }
+.proactive-companion[data-design-system="material3"] .pc-whisper { gap: 8px; align-items: center; background: transparent; }
 .proactive-companion[data-design-system="material3"] .pc-whisper-pill {
   --md-filled-tonal-button-container-height: 48px;
   flex: 1 1 auto; min-width: 0; min-height: 48px; padding: 0; border: 0; box-shadow: none;
@@ -1332,25 +1448,25 @@ onBeforeUnmount(() => {
   margin: 0; min-height: 48px; border: 0; padding: 0; border-radius: 24px; background: transparent;
 }
 .proactive-companion[data-design-system="material3"] .pc-whisper-input {
-  display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto; align-items: center;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center;
   gap: 0 4px; padding: 8px 8px 8px 16px; background: var(--md-sys-color-surface-container-high);
   border: 0; border-radius: 28px; box-shadow: none;
 }
-.proactive-companion[data-design-system="material3"] .pc-whisper-label { grid-column: 1; grid-row: 1; color: var(--md-sys-color-on-surface-variant); font-size: 12px; line-height: 16px; letter-spacing: .4px; }
-.proactive-companion[data-design-system="material3"] .pc-whisper-input input { grid-column: 1; grid-row: 2; min-height: 32px; width: 100%; font-size: 16px; line-height: 24px; letter-spacing: .2px; }
-.proactive-companion[data-design-system="material3"] .pc-whisper-input > :is(md-filled-button, md-filled-tonal-button) { grid-column: 2; grid-row: 1 / 3; min-width: 64px; --md-filled-button-container-height: 48px; }
-.proactive-companion[data-design-system="material3"] .pc-attach { grid-column: 3; grid-row: 1 / 3; width: 48px; height: 48px; padding: 0 !important; --md-icon-button-icon-size: 24px; }
-.proactive-companion[data-design-system="material3"] .pc-dictate { grid-column: 4; grid-row: 1 / 3; width: 48px; height: 48px; padding: 0 !important; --md-icon-button-icon-size: 24px; }
-.proactive-companion[data-design-system="material3"] .pc-whisper-close { grid-column: 5; grid-row: 1 / 3; width: 48px; height: 48px; padding: 0 !important; --md-icon-button-icon-size: 24px; }
+/* 输入条只留「一个框 + 发送键」：标签退成可访问名称，不再占视觉行。 */
+.proactive-companion[data-design-system="material3"] .pc-whisper-label {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0;
+  overflow: hidden; white-space: nowrap; clip-path: inset(50%);
+}
+.proactive-companion[data-design-system="material3"] .pc-whisper-input input { grid-column: 1; grid-row: 1; min-height: 32px; width: 100%; font-size: 16px; line-height: 24px; letter-spacing: .2px; }
+.proactive-companion[data-design-system="material3"] .pc-whisper-input > :is(md-filled-button, md-filled-tonal-button) { grid-column: 2; grid-row: 1; min-width: 64px; --md-filled-button-container-height: 48px; }
 .proactive-companion[data-design-system="material3"] .pc-attachment-chip {
-  grid-column: 1 / -1; grid-row: 3; display: inline-flex; align-items: center; gap: 6px;
+  grid-column: 1 / -1; grid-row: 2; display: inline-flex; align-items: center; gap: 6px;
   justify-self: start; max-width: 100%; margin-top: 4px; padding: 4px 6px 4px 12px;
   border-radius: 999px; font-size: 12px; line-height: 18px;
   color: var(--md-sys-color-on-surface-variant); background: var(--md-sys-color-surface-container-highest);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .pc-attachment-remove { display: grid; place-items: center; flex: 0 0 22px; width: 22px; height: 22px; border: 0; border-radius: 50%; background: transparent; color: inherit; cursor: pointer; }
-.pc-setup-hint { margin: 2px 16px 0; font-size: 12px; line-height: 18px; color: var(--pc-ink-3); }
 .pc-attachment-remove:hover { background: rgba(128, 134, 146, .18); }
 .proactive-companion[data-design-system="material3"] .pc-interaction {
   width: 100%; max-width: 620px; justify-self: center; padding: 20px; border-radius: 24px;
@@ -1383,11 +1499,49 @@ onBeforeUnmount(() => {
 }
 .pc-mobile-preparing { flex: 0 0 auto; margin: 8px 16px; color: var(--md-sys-color-on-surface-variant); font-size: 14px; line-height: 20px; }
 .pc-current-session { flex: 0 0 auto; margin: -4px 24px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--md-sys-color-on-surface-variant); font-size: 14px; line-height: 20px; }
-.pc-mobile-actions { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 8px; padding: 0 16px; background: var(--md-sys-color-surface); }
-.pc-mobile-actions > md-text-button { flex: 1; }
-.pc-mobile-actions > md-icon-button { width: 48px; height: 48px; }
+/* 首页卡片堆叠：对话 / 会话 / 工具 三张卡同层叠放，左右滑动切换。
+ * 桌面把轨道设为 contents，保持原有栅格排布不变。 */
+.pc-deck-track { display: contents; }
+.pc-deck-dots { display: none; }
+/* 指示点：命中区 24px，视觉是 6px 圆点，当前页拉长成短横。 */
+.pc-deck-dot {
+  display: grid; place-items: center;
+  width: 24px; height: 24px; padding: 0; border: 0; background: none; cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.pc-deck-dot::before {
+  content: ""; width: 6px; height: 6px; border-radius: 999px;
+  background: var(--md-sys-color-outline);
+  transition: width .18s var(--pc-ease), background-color .18s var(--pc-ease);
+}
+.pc-deck-dot.is-active::before { width: 18px; background: var(--md-sys-color-primary); }
+.pc-deck-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pc-deck-current { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; font-weight: 600; line-height: 22px; }
+.pc-deck-sessions { list-style: none; display: grid; gap: 6px; margin: 12px 0 0; padding: 0; }
+.pc-deck-session {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%;
+  padding: 10px 12px; border-radius: 14px; border: 1px solid transparent;
+  background: var(--md-sys-color-surface-container-high); color: inherit; font: inherit; font-size: 14px;
+  cursor: pointer; text-align: left;
+}
+.pc-deck-session.is-active { border-color: var(--md-sys-color-primary); }
+.pc-deck-session-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-deck-session-mark { flex: 0 0 auto; font-size: 11px; color: var(--md-sys-color-primary); }
+.pc-deck-empty { margin: 14px 0 0; color: var(--md-sys-color-on-surface-variant); font-size: 13px; line-height: 19px; }
+.pc-deck-foot { display: flex; gap: 4px; margin-top: auto; padding-top: 8px; }
+.pc-deck-tools { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 10px; }
+/* 工具卡内容少，整组垂直居中；否则卡片高度对齐对话卡后底部会空一大块。 */
+.pc-deck-box--tools { justify-content: center; }
+.pc-home-tool {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  min-height: 84px; padding: 12px; font: inherit; font-size: 13px; cursor: pointer;
+  border-radius: 18px; border: 1px solid var(--md-sys-color-outline-variant);
+  background: var(--md-sys-color-surface-container-low); color: var(--md-sys-color-on-surface-variant);
+}
+.pc-home-tool:disabled { opacity: .5; cursor: default; }
+.pc-home-tool:active:not(:disabled) { background: var(--md-sys-color-surface-container-high); }
 .pc-mobile-session-feedback { flex: 0 0 auto; margin: 8px 16px; font-size: 14px; line-height: 20px; color: var(--md-sys-color-error); }
-.proactive-companion[data-design-system="material3"] .pc-whisper-input textarea { grid-column: 1; grid-row: 2; width: 100%; min-width: 0; min-height: 32px; max-height: 120px; border: 0; padding: 0; resize: none; outline: none; background: transparent; color: var(--md-sys-color-on-surface); font: inherit; font-size: 16px; line-height: 24px; overflow-y: auto; }
+.proactive-companion[data-design-system="material3"] .pc-whisper-input textarea { grid-column: 1; grid-row: 1; width: 100%; min-width: 0; min-height: 32px; max-height: 120px; border: 0; padding: 0; resize: none; outline: none; background: transparent; color: var(--md-sys-color-on-surface); font: inherit; font-size: 16px; line-height: 24px; overflow-y: auto; }
 /* Keep feedback, its action and the editable draft available together above an IME. */
 .proactive-companion[data-design-system="material3"].pc-viewport--short.pc-has-feedback .pc-whisper-input textarea { max-height: 32px; }
 
@@ -1405,8 +1559,14 @@ onBeforeUnmount(() => {
 .proactive-companion[data-design-system="material3"] .pc-dialogue-text { font-size: 15px; line-height: 25px; }
 .proactive-companion[data-design-system="material3"] .pc-whisper-input {
   border-radius: 999px; padding: 6px 6px 6px 18px;
-  border-color: color-mix(in srgb, var(--pc-line, rgba(255,255,255,.14)) 80%, transparent);
-  box-shadow: 0 10px 28px -12px rgba(0,0,0,.4);
+  /* 与对话卡同一套「近实底玻璃」：同一层渐变 + 88% 卡片色 + 模糊，
+     这样输入条和卡片看起来是同一种材料，而不是两种灰。 */
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.03)),
+    color-mix(in srgb, var(--pc-card, #171b22) 88%, transparent);
+  backdrop-filter: blur(18px);
+  border: 1px solid var(--pc-line, rgba(255,255,255,.10));
+  box-shadow: 0 12px 32px -18px rgba(0,0,0,.45);
 }
 .proactive-companion[data-design-system="material3"] .pc-whisper-input:focus-within {
   border-color: var(--pc-accent, #9b7aff);
@@ -1422,10 +1582,6 @@ onBeforeUnmount(() => {
 .proactive-companion[data-design-system="material3"] .pc-choice--primary {
   background: linear-gradient(135deg, color-mix(in srgb, var(--pc-accent, #9b7aff) 26%, transparent), color-mix(in srgb, var(--pc-accent, #9b7aff) 10%, transparent));
   border-color: color-mix(in srgb, var(--pc-accent, #9b7aff) 42%, transparent);
-}
-.proactive-companion[data-design-system="material3"] .pc-mobile-actions {
-  border-top: 1px solid var(--pc-line, rgba(255,255,255,.10));
-  padding-block: 4px max(4px, env(safe-area-inset-bottom, 0px));
 }
 .proactive-companion[data-design-system="material3"] .pc-current-session { margin-block-end: 2px; }
 /* 名牌压在角色身上时保持可读：给一层贴近底色的圆角衬底。 */

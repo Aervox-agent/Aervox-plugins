@@ -816,7 +816,7 @@ it('remeasures an unchanged mobile draft after wrapping width changes without ob
   expect(readHeight).not.toHaveBeenCalled();
 });
 
-it('remeasures a mobile draft when reopening input and resizing even without ResizeObserver', async () => {
+it('remeasures a mobile draft on focus and resize even without ResizeObserver', async () => {
   vi.stubGlobal('ResizeObserver', undefined);
   const wrapper = await mountSurface('mobile', true);
   const input = wrapper.get('.pc-whisper-input textarea');
@@ -827,7 +827,7 @@ it('remeasures a mobile draft when reopening input and resizing even without Res
   await flushPromises();
   expect(textarea.style.height).toBe('72px');
   await input.trigger('focus');
-  await wrapper.get('.pc-whisper-close').trigger('click');
+  textarea.blur();
   await flushPromises();
   contentHeight = 96;
   await input.trigger('focus');
@@ -1180,7 +1180,6 @@ it('does not push a hidden input layer above an open mobile modal when a draft i
   await wrapper.get('.pc-whisper-input textarea').setValue('等待回执时保留');
   await wrapper.get('.pc-whisper-input textarea').trigger('focus');
   await wrapper.get('.pc-whisper-input md-filled-button').trigger('click'); await flushPromises();
-  await wrapper.get('.pc-whisper-close').trigger('click'); await flushPromises();
   await wrapper.get('[aria-label="会话列表"]').trigger('click'); await flushPromises();
   expect(layers).toHaveLength(1);
   fail(new TypeError('offline')); await flushPromises();
@@ -1304,7 +1303,7 @@ it('fills the draft from the host speech input', async () => {
     submitQuestionAnswers: vi.fn(), decideToolApproval: vi.fn(), speechInput,
   } });
   const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
-  const mic = wrapper.get('md-icon-button[aria-label="语音输入"]');
+  const mic = wrapper.get('[aria-label="语音输入"]');
   await mic.trigger('click');
   await flushPromises();
   expect(speechInput).toHaveBeenCalledTimes(1);
@@ -1319,7 +1318,7 @@ it('attaches a picked text file to the next message and clears it after sending'
     submitQuestionAnswers: vi.fn(), decideToolApproval: vi.fn(), pickTextFile,
   } });
   const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
-  await wrapper.get('md-icon-button[aria-label="添加文本附件"]').trigger('click');
+  await wrapper.get('[aria-label="添加文本附件"]').trigger('click');
   await flushPromises();
   expect(pickTextFile).toHaveBeenCalledTimes(1);
   expect(wrapper.get('.pc-attachment-chip').text()).toContain('notes.md');
@@ -1336,7 +1335,7 @@ it('attaches a picked text file to the next message and clears it after sending'
 
 it('hides dictation when the host provides no recognizer', async () => {
   const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
-  expect(wrapper.find('md-icon-button[aria-label="语音输入"]').exists()).toBe(false);
+  expect(wrapper.find('[aria-label="语音输入"]').exists()).toBe(false);
 });
 
 it('explains a missing microphone permission instead of pretending it heard', async () => {
@@ -1346,7 +1345,7 @@ it('explains a missing microphone permission instead of pretending it heard', as
     submitQuestionAnswers: vi.fn(), decideToolApproval: vi.fn(), speechInput,
   } });
   const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
-  const mic = wrapper.get('md-icon-button[aria-label="语音输入"]');
+  const mic = wrapper.get('[aria-label="语音输入"]');
   await mic.trigger('click');
   await flushPromises();
   expect(wrapper.get('.pc-mobile-status').text()).toBe('需要麦克风权限，请在系统设置中允许后重试。');
