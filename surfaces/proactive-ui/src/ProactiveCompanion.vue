@@ -134,6 +134,8 @@ const DICTATION_ERRORS: Record<string, string> = {
   SPEECH_INPUT_TIMEOUT: '聆听超时，请再试一次。',
   SPEECH_INPUT_BUSY: '正在聆听中，请稍候。',
   SPEECH_INPUT_UNAVAILABLE: '这台手机没有可用的语音识别。',
+  SPEECH_INPUT_FAILED: '语音识别没有启动，请稍后再试。',
+  CLOSED: '语音识别没有启动，请稍后再试。',
 };
 /** One bounded recognition fills the draft; the phone owns the recognizer. */
 async function dictate() {
