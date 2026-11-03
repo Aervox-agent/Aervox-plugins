@@ -1004,8 +1004,10 @@ onBeforeUnmount(() => {
     z-index: 0;
   }
   .proactive-companion[data-platform="mobile"] .pc-pet-wrap {
+    /* 角色撑满舞台但不让舞台吃掉首屏预算：问候态（卡片脚行 + 提示行 + 接续卡）
+       必须收进内容区折叠线以上，否则会被底栏裁成半截。 */
     width: min(400px, 94vw);
-    height: clamp(360px, 64dvh, 600px);
+    height: clamp(300px, 42dvh, 430px);
   }
   /* Pixi sets an inline touch-action:none. Keep vertical page gestures while
    * retaining taps on the character in the larger phone stage. */
@@ -1015,7 +1017,8 @@ onBeforeUnmount(() => {
   .proactive-companion[data-platform="mobile"] .pc-dialogue {
     position: relative;
     z-index: 1;
-    margin-block-start: clamp(-200px, -22dvh, -120px);
+    /* 对话层覆盖角色下半身；叠放深度保持 ~22dvh，首屏腾挪主要靠舞台高度预算。 */
+    margin-block-start: clamp(-220px, -24dvh, -120px);
   }
 }
 .pc-pet-wrap :deep(.aervox-live2d-pet) { min-height: 0; }
@@ -1387,4 +1390,48 @@ onBeforeUnmount(() => {
 .proactive-companion[data-design-system="material3"] .pc-whisper-input textarea { grid-column: 1; grid-row: 2; width: 100%; min-width: 0; min-height: 32px; max-height: 120px; border: 0; padding: 0; resize: none; outline: none; background: transparent; color: var(--md-sys-color-on-surface); font: inherit; font-size: 16px; line-height: 24px; overflow-y: auto; }
 /* Keep feedback, its action and the editable draft available together above an IME. */
 .proactive-companion[data-design-system="material3"].pc-viewport--short.pc-has-feedback .pc-whisper-input textarea { max-height: 32px; }
+
+/* --- 观感精修：气泡 / 输入区 / 卡片 / 底栏 --- */
+.proactive-companion[data-design-system="material3"] .pc-dialogue-box {
+  border-radius: 20px; padding: 18px 20px 14px;
+  /* 玻璃渐变下垫近实底：对话层覆盖角色下半身时文字仍可读，观感不变。 */
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.03)),
+    color-mix(in srgb, var(--pc-card, #171b22) 88%, transparent);
+  backdrop-filter: blur(18px);
+  border: 1px solid var(--pc-line, rgba(255,255,255,.10));
+  box-shadow: 0 12px 32px -18px rgba(0,0,0,.45);
+}
+.proactive-companion[data-design-system="material3"] .pc-dialogue-text { font-size: 15px; line-height: 25px; }
+.proactive-companion[data-design-system="material3"] .pc-whisper-input {
+  border-radius: 999px; padding: 6px 6px 6px 18px;
+  border-color: color-mix(in srgb, var(--pc-line, rgba(255,255,255,.14)) 80%, transparent);
+  box-shadow: 0 10px 28px -12px rgba(0,0,0,.4);
+}
+.proactive-companion[data-design-system="material3"] .pc-whisper-input:focus-within {
+  border-color: var(--pc-accent, #9b7aff);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--pc-accent, #9b7aff) 28%, transparent), 0 10px 28px -12px rgba(0,0,0,.4);
+}
+.proactive-companion[data-design-system="material3"] .pc-whisper-input button {
+  border-radius: 999px; min-width: 44px; padding-inline: 16px;
+}
+.proactive-companion[data-design-system="material3"] .pc-whisper-label { font-size: 11px; letter-spacing: .02em; opacity: .72; }
+.proactive-companion[data-design-system="material3"] .pc-choice {
+  border-radius: 18px; padding: 15px 17px;
+}
+.proactive-companion[data-design-system="material3"] .pc-choice--primary {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--pc-accent, #9b7aff) 26%, transparent), color-mix(in srgb, var(--pc-accent, #9b7aff) 10%, transparent));
+  border-color: color-mix(in srgb, var(--pc-accent, #9b7aff) 42%, transparent);
+}
+.proactive-companion[data-design-system="material3"] .pc-mobile-actions {
+  border-top: 1px solid var(--pc-line, rgba(255,255,255,.10));
+  padding-block: 4px max(4px, env(safe-area-inset-bottom, 0px));
+}
+.proactive-companion[data-design-system="material3"] .pc-current-session { margin-block-end: 2px; }
+/* 名牌压在角色身上时保持可读：给一层贴近底色的圆角衬底。 */
+.proactive-companion[data-design-system="material3"] .pc-dialogue-name {
+  padding: 3px 10px; border-radius: 999px;
+  background: color-mix(in srgb, var(--pc-bg, #101318) 72%, transparent);
+  backdrop-filter: blur(8px);
+}
 </style>
