@@ -69,8 +69,11 @@ const mobileSessionTitle = computed(() => sessions.activeSession.value?.title ??
 /* ---------- 对话盒 ---------- */
 const identity = readCompanionIdentity();
 const companionName = ref(identity.companionName);
+// The first-run setup hint is state, not greeting copy: it renders only while
+// no model is configured and is strictly absent otherwise.
+const showSetupHint = ref(false);
 const greeting = '你好' + (identity.userAddress === '你' ? '' : '，' + identity.userAddress) + '，我是' + identity.companionName
-  + (props.nativeRuntime ? '。想聊什么，直接告诉我。首次使用请在设置中配置模型服务。' : '。今天想继续昨天的进度，还是先安静专注一会儿？');
+  + (props.nativeRuntime ? '。想聊什么，直接告诉我。' : '。今天想继续昨天的进度，还是先安静专注一会儿？');
 const dialogueCtx = ref(props.nativeRuntime ? '本机对话' : '主动陪伴 · 每日开场');
 const { shown: dialogueText, streaming: dialogueTyping, say, appendDelta, finish } = useDialogueTyper(greeting);
 
@@ -117,6 +120,11 @@ async function copyReply() {
 // inject() only resolves during setup; event handlers must reuse this capture.
 const clientTransport = getClientTransport();
 const dictationSupported = typeof clientTransport.speechInput === 'function';
+if (props.nativeRuntime) {
+  void clientTransport.request<{ configured?: boolean }>('GET', '/v1/models/summary')
+    .then(summary => { showSetupHint.value = summary?.configured === false; })
+    .catch(() => { showSetupHint.value = true; });
+}
 const dictating = ref(false);
 const dictationFeedback = ref('');
 let dictationTimer: ReturnType<typeof setTimeout> | undefined;
@@ -764,6 +772,7 @@ onBeforeUnmount(() => {
             :disabled="dialogueTyping || !dialogueText.trim()" @click="readAloud"><Volume2 :size="18" aria-hidden="true" /></component>
         </div>
       </div>
+      <p v-if="material3 && showSetupHint" class="pc-setup-hint" role="note">首次使用请在设置中配置模型服务。</p>
       <Teleport :to="mobileFeedbackRegion" :disabled="!material3 || !mobileFeedbackRegion">
       <div v-if="turnFeedback" class="pc-feedback" :data-kind="turnFeedback.kind" role="status">
         <span>{{ turnFeedback.message }}</span>
@@ -1312,6 +1321,7 @@ onBeforeUnmount(() => {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .pc-attachment-remove { display: grid; place-items: center; flex: 0 0 22px; width: 22px; height: 22px; border: 0; border-radius: 50%; background: transparent; color: inherit; cursor: pointer; }
+.pc-setup-hint { margin: 2px 16px 0; font-size: 12px; line-height: 18px; color: var(--pc-ink-3); }
 .pc-attachment-remove:hover { background: rgba(128, 134, 146, .18); }
 .proactive-companion[data-design-system="material3"] .pc-interaction {
   width: 100%; max-width: 620px; justify-self: center; padding: 20px; border-radius: 24px;
