@@ -66,10 +66,10 @@ const sessionManageError = ref<string | null>(null);
 watch(sessionsOpen, open => { if (open) sessionManageError.value = null; });
 const mobileSessionTitle = computed(() => sessions.activeSession.value?.title ?? (!sessionsReady.value ? '正在读取会话…' : sessionListError.value ? '会话读取失败' : sessions.activeSessionId.value && sessions.activeSessionId.value !== 'web_default' ? '当前会话不可用' : '新对话'));
 
-/* ---------- 卡片堆叠（对话 / 会话 / 工具，横向滑动切换） ---------- */
+/* ---------- 卡片堆叠（对话 / 会话 / 工具 / 日记，横向滑动切换） ---------- */
 const deckTrack = ref<HTMLDivElement>();
 const deckIndex = ref(0);
-const deckSize = computed(() => material3 ? 3 : 1);
+const deckSize = computed(() => material3 ? 4 : 1);
 function onDeckScroll() {
   const track = deckTrack.value;
   if (!track || !track.clientWidth) return;
@@ -81,6 +81,75 @@ function goDeck(index: number) {
   track.scrollTo({ left: index * track.clientWidth, behavior: 'smooth' });
   deckIndex.value = index;
 }
+
+/* ---------- 日记（今天 + 往期） ---------- */
+interface DiaryEntry { id: string; localDate: string; title: string; content: string }
+const diaryToday = ref<DiaryEntry | null>(null);
+const diaryPast = ref<DiaryEntry[]>([]);
+/** 非空表示正在回看往期；空表示看今天。 */
+const diaryViewing = ref<DiaryEntry | null>(null);
+const diaryBusy = ref(false);
+const diaryError = ref('');
+const diaryNote = ref('');
+const diaryLoaded = ref(false);
+const diaryHistoryOpen = ref(false);
+const diaryShown = computed(() => diaryViewing.value ?? diaryToday.value);
+const diaryTitle = computed(() => diaryShown.value?.title ?? '今天的日记');
+const diaryBody = computed(() => {
+  // 服务端把标题作为首行写入正文，卡片已单独显示标题，这里去掉重复的那一行与首尾空行。
+  return (diaryShown.value?.content ?? '').replace(/^\s*标题[：:].*\n+/, '').trim();
+});
+const diaryLocalDate = () => new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+
+async function loadDiary(force = false) {
+  if (diaryBusy.value || (diaryLoaded.value && !force)) return;
+  diaryBusy.value = true;
+  diaryError.value = '';
+  try {
+    diaryToday.value = await clientTransport.request<DiaryEntry>('GET', `/v1/diaries?localDate=${diaryLocalDate()}`);
+  } catch (error) {
+    // 404 是「今天还没写」，不是故障；只有别的错误才提示。
+    diaryToday.value = null;
+    if (!(error instanceof AervoxHttpError) || error.status !== 404) diaryError.value = '今天的日记没有读到。';
+  }
+  try {
+    const list = await clientTransport.request<{ items: DiaryEntry[] }>('GET', '/v1/diaries?limit=8');
+    diaryPast.value = list.items ?? [];
+  } catch { diaryPast.value = []; }
+  diaryLoaded.value = true;
+  diaryBusy.value = false;
+}
+
+async function writeDiary() {
+  if (diaryBusy.value) return;
+  diaryBusy.value = true;
+  diaryError.value = '';
+  diaryNote.value = '';
+  try {
+    const result = await clientTransport.request<{ diaryId: string; title: string; content: string; mode: string; generatedBy: string }>(
+      'POST', '/v1/diaries/generate-today', { rewrite: diaryToday.value !== null },
+    );
+    diaryToday.value = { id: result.diaryId, localDate: diaryLocalDate(), title: result.title, content: result.content };
+    diaryViewing.value = null;
+    diaryNote.value = result.generatedBy === 'template' ? '已按模板写好；配置模型后我会亲手写。' : '写好了。';
+    await loadDiary(true);
+  } catch {
+    diaryError.value = '这篇没写成，稍后再试。';
+  } finally {
+    diaryBusy.value = false;
+  }
+}
+
+function openPastDiary(entry: DiaryEntry) {
+  diaryViewing.value = entry;
+  diaryHistoryOpen.value = false;
+}
+function closePastDiary() {
+  diaryViewing.value = null;
+}
+
+// 只在真的翻到日记卡时读取，别让首页启动多两次请求。
+watch(deckIndex, index => { if (index === 3) void loadDiary(); });
 
 /* ---------- 对话盒 ---------- */
 const identity = readCompanionIdentity();
@@ -869,9 +938,37 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </section>
+
+    <section v-if="material3" class="pc-deck-slide" aria-label="日记">
+      <div class="pc-dialogue-name">日记</div>
+      <div class="pc-dialogue-box pc-deck-box">
+        <div class="pc-deck-head">
+          <span class="pc-deck-current">{{ diaryTitle }}</span>
+          <component :is="'md-text-button'" type="button" class="pc-deck-new" :disabled="diaryBusy" @click="writeDiary">{{ diaryToday ? '重写' : '写一篇' }}</component>
+        </div>
+        <div class="pc-diary-scroll">
+          <p v-if="diaryBusy && !diaryShown" class="pc-deck-empty">正在写今天的日记…</p>
+          <div v-else-if="diaryHistoryOpen" class="pc-diary-list">
+            <button v-for="entry in diaryPast" :key="entry.id" type="button" class="pc-deck-session" @click="openPastDiary(entry)">
+              <span class="pc-deck-session-title">{{ entry.title }}</span>
+              <span class="pc-deck-session-mark">{{ entry.localDate }}</span>
+            </button>
+            <p v-if="!diaryPast.length" class="pc-deck-empty">还没有往期日记。</p>
+          </div>
+          <p v-else-if="!diaryShown" class="pc-deck-empty">今天还没写。点「写一篇」记下来。</p>
+          <p v-else class="pc-diary-text">{{ diaryBody }}</p>
+        </div>
+        <div class="pc-deck-foot">
+          <component :is="'md-text-button'" v-if="diaryViewing" type="button" @click="closePastDiary()">回到今天</component>
+          <component :is="'md-text-button'" v-else type="button" @click="diaryHistoryOpen = !diaryHistoryOpen">{{ diaryHistoryOpen ? '收起' : '往期' }}</component>
+        </div>
+      </div>
+      <p v-if="diaryNote" class="pc-deck-hint" role="status">{{ diaryNote }}</p>
+      <p v-if="diaryError" class="pc-deck-hint pc-diary-error" role="alert">{{ diaryError }}</p>
+    </section>
     </div>
     <div v-if="material3" class="pc-deck-dots" role="tablist" aria-label="卡片切换">
-      <button v-for="(label, index) in ['对话', '会话', '工具']" :key="label" type="button" role="tab"
+      <button v-for="(label, index) in ['对话', '会话', '工具', '日记']" :key="label" type="button" role="tab"
         class="pc-deck-dot" :class="{ 'is-active': deckIndex === index }" :aria-selected="deckIndex === index"
         :aria-label="'切换到' + label" @click="goDeck(index)" />
     </div>
@@ -1055,7 +1152,7 @@ onBeforeUnmount(() => {
        这样角色不会半透明地透出卡面，也不会从卡片下方露腿。 */
     align-items: start;
     overflow: hidden;
-    height: clamp(280px, 45dvh, 480px);
+    height: clamp(280px, 42dvh, 480px);
   }
   /* 建议贴在角色身上说话：悬浮在卡片上缘的一条玻璃建议，不再占页面末尾的位置。
      bottom 需大于卡片上提量里的名牌区，否则会被卡片扑住。 */
@@ -1104,7 +1201,7 @@ onBeforeUnmount(() => {
     margin-block-start: clamp(-260px, -9dvh, -40px);
     padding-block-end: 2px;
     /* 三张卡统一尺寸：切换时不再因为内容多少而跳动，长内容在卡内滚动。 */
-    height: clamp(190px, 28dvh, 250px);
+    height: clamp(200px, 31dvh, 270px);
   }
   .proactive-companion[data-platform="mobile"] .pc-deck-slide { height: 100%; }
   /* 卡片是纵向 flex，名牌作为 flex 项会被拉满整行——收成内容宽度的胶囊。 */
@@ -1529,6 +1626,12 @@ onBeforeUnmount(() => {
 .pc-deck-session-mark { flex: 0 0 auto; font-size: 11px; color: var(--md-sys-color-primary); }
 .pc-deck-empty { margin: 14px 0 0; color: var(--md-sys-color-on-surface-variant); font-size: 13px; line-height: 19px; }
 .pc-deck-foot { display: flex; gap: 4px; margin-top: auto; padding-top: 8px; }
+/* 日记卡：正文在卡内滚动，标题与页脚常驻。 */
+.pc-diary-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; margin-top: 10px; }
+.pc-diary-text { margin: 0; font-size: 14px; line-height: 24px; color: var(--md-sys-color-on-surface); white-space: pre-wrap; overflow-wrap: anywhere; }
+.pc-diary-list { display: grid; gap: 6px; }
+.pc-deck-hint { margin: 8px 4px 0; font-size: 12px; line-height: 18px; color: var(--md-sys-color-on-surface-variant); }
+.pc-diary-error { color: var(--md-sys-color-error); }
 .pc-deck-tools { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 10px; }
 /* 工具卡内容少，整组垂直居中；否则卡片高度对齐对话卡后底部会空一大块。 */
 .pc-deck-box--tools { justify-content: center; }
