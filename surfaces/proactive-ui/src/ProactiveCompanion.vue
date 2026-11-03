@@ -449,6 +449,27 @@ const whisperText = ref('');
 // bridge; a text file is an honest first slice of the attachment story).
 const attachment = ref<{ name: string; text: string } | null>(null);
 const attachmentSupported = typeof clientTransport.pickTextFile === 'function';
+const attachmentKey = () => `aervox-attachment:${sessions.activeSessionId.value || 'none'}`;
+function persistAttachment() {
+  try {
+    const target = props.draftStorage ?? (typeof localStorage === 'undefined' ? undefined : localStorage);
+    if (!target) return;
+    if (attachment.value) target.setItem(attachmentKey(), JSON.stringify(attachment.value));
+    else target.removeItem(attachmentKey());
+  } catch { /* Storage is best-effort; the chip still works without it. */ }
+}
+function restoreAttachment() {
+  try {
+    const target = props.draftStorage ?? (typeof localStorage === 'undefined' ? undefined : localStorage);
+    const raw = target?.getItem(attachmentKey());
+    if (raw) attachment.value = JSON.parse(raw) as { name: string; text: string };
+  } catch { /* A corrupt draft is simply absent. */ }
+}
+restoreAttachment();
+watch(() => sessions.activeSessionId.value, () => {
+  attachment.value = null;
+  restoreAttachment();
+});
 async function pickAttachment() {
   if (!attachmentSupported) return;
   try {
@@ -458,6 +479,7 @@ async function pickAttachment() {
       ? `${picked.text.slice(0, budget)}\n（附件超过 32 KiB，已截断）`
       : picked.text;
     attachment.value = { name: picked.name, text };
+    persistAttachment();
   } catch (error) {
     // Cancellation is quiet; a broken picker must be visible, not swallowed.
     const code = error instanceof Error ? error.message : '';
@@ -534,7 +556,7 @@ async function sendWhisper() {
   const attached = attachment.value;
   const composed = attached ? `${text}\n\n（附件：${attached.name}）\n${attached.text}` : text;
   const sent = await sendTurn(composed, 'whisper', material3 ? raw : undefined);
-  if (sent && attached) attachment.value = null;
+  if (sent && attached) { attachment.value = null; persistAttachment(); }
   if (!material3 && sent && whisperText.value.trim() === text) {
     whisperText.value = '';
     closeWhisper();
@@ -843,7 +865,7 @@ onBeforeUnmount(() => {
       <div v-else class="pc-whisper-input">
         <span v-if="material3 && attachment" class="pc-attachment-chip">
           <Paperclip :size="13" aria-hidden="true" />{{ attachment.name }}
-          <button type="button" class="pc-attachment-remove" aria-label="移除附件" @click="attachment = null"><X :size="12" aria-hidden="true" /></button>
+          <button type="button" class="pc-attachment-remove" aria-label="移除附件" @click="attachment = null; persistAttachment()"><X :size="12" aria-hidden="true" /></button>
         </span>
         <label v-if="material3" class="pc-whisper-label" for="pc-material-whisper">悄悄对{{ companionName }}说</label>
         <textarea v-if="material3" :readonly="preparingSession || sessionChanging" id="pc-material-whisper" ref="whisperInput" v-model="whisperText" rows="1"
