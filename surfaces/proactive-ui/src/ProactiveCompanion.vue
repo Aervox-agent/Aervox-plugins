@@ -1435,7 +1435,8 @@ onBeforeUnmount(() => {
 .pc-viewport--short .pc-dialogue,
 .pc-viewport--short .pc-choices,
 .pc-viewport--short .pc-plugin-cards { grid-column: auto; grid-row: auto; }
-.proactive-companion[data-platform="mobile"].pc-viewport--short .pc-dialogue { margin-block-start: 0; }
+.proactive-companion[data-platform="mobile"].pc-viewport--short .pc-dialogue,
+.proactive-companion[data-platform="mobile"].pc-viewport--short .pc-deck-track { margin-block-start: 0; }
 .proactive-companion.pc-viewport--short .pc-whisper-label,
 .pc-viewport--short .pc-whisper-label { display: none; }
 .proactive-companion.pc-viewport--short .pc-whisper-input textarea,
@@ -1455,7 +1456,8 @@ onBeforeUnmount(() => {
     grid-auto-rows: max-content; align-content: start; gap: 12px; padding-block: 8px 12px;
   }
   .pc-dialogue, .pc-choices, .pc-plugin-cards { grid-column: auto; grid-row: auto; }
-  .proactive-companion[data-platform="mobile"] .pc-dialogue { margin-block-start: 0; }
+  .proactive-companion[data-platform="mobile"] .pc-dialogue,
+  .proactive-companion[data-platform="mobile"] .pc-deck-track { margin-block-start: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   .pc-caret, .pc-waiting-dots i { animation: none; }
