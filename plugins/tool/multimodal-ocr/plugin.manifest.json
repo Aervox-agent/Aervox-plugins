@@ -5,7 +5,7 @@
     "id": "ap-tool-multimodal-ocr",
     "displayName": "多模态与数学公式 OCR 增强",
     "publisher": "aervox-official",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "description": "CAP-012 / CAP-025: 增强多模态答疑能力，支持题目截图识别、LaTeX 数学公式提取与知识图谱关键实体抽取。",
     "license": "AGPL-3.0-or-later",
     "category": "tool",

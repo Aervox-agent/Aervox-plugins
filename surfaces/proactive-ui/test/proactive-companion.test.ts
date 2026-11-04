@@ -1350,3 +1350,74 @@ it('explains a missing microphone permission instead of pretending it heard', as
   await flushPromises();
   expect(wrapper.get('.pc-mobile-status').text()).toBe('需要麦克风权限，请在系统设置中允许后重试。');
 });
+
+it('refreshes diary history after publication and returns from history to the new diary', async () => {
+  const localDate = new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  const old = { id: 'd_old', localDate: '2026-11-01', title: '以前的日记', content: '以前的正文' };
+  let published = false;
+  const today = { id: 'd_today', localDate, title: '今天的新日记', content: '今天的新正文' };
+  request.mockImplementation(async (method, path) => {
+    if (path === '/v1/diaries/generate-today') { published = true; return { diaryId: today.id, ...today, mode: 'created', generatedBy: 'template' }; }
+    if (path.startsWith('/v1/diaries?localDate=')) {
+      if (!published) throw new AervoxHttpError(404, path);
+      return today;
+    }
+    if (path === '/v1/diaries?limit=8') return { items: published ? [today, old] : [old] };
+    return requestImplementation(method, path);
+  });
+  const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
+  await wrapper.get('[aria-label="切换到日记"]').trigger('click'); await flushPromises();
+  const diary = wrapper.get('[aria-label="日记"]');
+  await diary.findAll('md-text-button').find(item => item.text() === '往期')!.trigger('click');
+  expect(diary.text()).toContain('以前的日记');
+  await diary.findAll('md-text-button').find(item => item.text() === '写一篇')!.trigger('click'); await flushPromises();
+  expect(diary.text()).toContain('今天的新正文');
+  expect(diary.find('.pc-diary-list').exists()).toBe(false);
+  expect(request.mock.calls.filter(call => call[1] === '/v1/diaries?limit=8')).toHaveLength(2);
+  await diary.findAll('md-text-button').find(item => item.text() === '往期')!.trigger('click');
+  expect(diary.get('.pc-diary-list').text()).toContain('今天的新日记');
+});
+
+it('exposes diary read errors and retries without pretending that history is empty', async () => {
+  let failing = true;
+  request.mockImplementation(async (method, path) => {
+    if (path.startsWith('/v1/diaries')) {
+      if (failing) throw new AervoxHttpError(503, path);
+      return path.includes('limit=') ? { items: [] } : { id: 'd_ok', localDate: '2026-11-04', title: '读回来了', content: '恢复的正文' };
+    }
+    return requestImplementation(method, path);
+  });
+  const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
+  await wrapper.get('[aria-label="切换到日记"]').trigger('click'); await flushPromises();
+  const diary = wrapper.get('[aria-label="日记"]');
+  expect(diary.text()).toContain('今天的日记没有读到，可以重试');
+  expect(diary.text()).not.toContain('今天还没写');
+  failing = false;
+  await diary.findAll('md-text-button').find(item => item.text() === '重试读取日记')!.trigger('click'); await flushPromises();
+  expect(diary.text()).toContain('恢复的正文');
+  expect(diary.find('[role="alert"]').exists()).toBe(false);
+});
+
+it('reloads the diary under the new local date when the diary card is revisited after midnight', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  try {
+    vi.setSystemTime(new Date(2026, 10, 4, 23, 59));
+    request.mockImplementation(async (method, path) => {
+      if (path.startsWith('/v1/diaries?localDate=')) {
+        const localDate = new URL(path, 'https://localhost').searchParams.get('localDate');
+        return { id: `d_${localDate}`, localDate, title: `${localDate} 的日记`, content: `${localDate} 的正文` };
+      }
+      if (path === '/v1/diaries?limit=8') return { items: [] };
+      return requestImplementation(method, path);
+    });
+    const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
+    await wrapper.get('[aria-label="切换到日记"]').trigger('click'); await flushPromises();
+    const diary = wrapper.get('[aria-label="日记"]');
+    expect(diary.text()).toContain('2026-11-04 的正文');
+    vi.setSystemTime(new Date(2026, 10, 5, 0, 1));
+    await wrapper.get('[aria-label="切换到对话"]').trigger('click');
+    await wrapper.get('[aria-label="切换到日记"]').trigger('click'); await flushPromises();
+    expect(diary.text()).toContain('2026-11-05 的正文');
+    expect(diary.text()).not.toContain('2026-11-04 的正文');
+  } finally { vi.useRealTimers(); }
+});

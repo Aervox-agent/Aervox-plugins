@@ -5,7 +5,7 @@
     "id": "ap-proactive-health-guard",
     "displayName": "久坐与健康护航助手",
     "publisher": "aervox-official",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "description": "CR-032 首个出厂主动智能插件：基于系统空闲状态感知久坐，在合适的时机由桌宠主动送上温和的健康关怀。",
     "license": "AGPL-3.0-or-later",
     "category": "proactive",

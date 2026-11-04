@@ -88,10 +88,12 @@ const diaryToday = ref<DiaryEntry | null>(null);
 const diaryPast = ref<DiaryEntry[]>([]);
 /** 非空表示正在回看往期；空表示看今天。 */
 const diaryViewing = ref<DiaryEntry | null>(null);
-const diaryBusy = ref(false);
+const diaryLoading = ref(false);
+const diaryWriting = ref(false);
+const diaryBusy = computed(() => diaryLoading.value || diaryWriting.value);
 const diaryError = ref('');
 const diaryNote = ref('');
-const diaryLoaded = ref(false);
+let diaryLoadedDate = '';
 const diaryHistoryOpen = ref(false);
 const diaryShown = computed(() => diaryViewing.value ?? diaryToday.value);
 const diaryTitle = computed(() => diaryShown.value?.title ?? '今天的日记');
@@ -102,41 +104,60 @@ const diaryBody = computed(() => {
 const diaryLocalDate = () => new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 
 async function loadDiary(force = false) {
-  if (diaryBusy.value || (diaryLoaded.value && !force)) return;
-  diaryBusy.value = true;
+  const localDate = diaryLocalDate();
+  if (diaryLoading.value || (diaryWriting.value && !force) || (diaryLoadedDate === localDate && !force)) return;
+  // A cached yesterday must never remain labelled as today's diary.
+  if (diaryLoadedDate && diaryLoadedDate !== localDate
+    || diaryToday.value && diaryToday.value.localDate !== localDate) {
+    diaryToday.value = null; diaryViewing.value = null; diaryHistoryOpen.value = false; diaryNote.value = '';
+  }
+  diaryLoading.value = true;
   diaryError.value = '';
+  let todayRead = false;
+  let historyRead = false;
   try {
-    diaryToday.value = await clientTransport.request<DiaryEntry>('GET', `/v1/diaries?localDate=${diaryLocalDate()}`);
+    diaryToday.value = await clientTransport.request<DiaryEntry>('GET', `/v1/diaries?localDate=${localDate}`);
+    todayRead = true;
   } catch (error) {
-    // 404 是「今天还没写」，不是故障；只有别的错误才提示。
-    diaryToday.value = null;
-    if (!(error instanceof AervoxHttpError) || error.status !== 404) diaryError.value = '今天的日记没有读到。';
+    if (error instanceof AervoxHttpError && error.status === 404) {
+      diaryToday.value = null;
+      todayRead = true;
+    } else {
+      diaryError.value = '今天的日记没有读到，可以重试。';
+    }
   }
   try {
     const list = await clientTransport.request<{ items: DiaryEntry[] }>('GET', '/v1/diaries?limit=8');
     diaryPast.value = list.items ?? [];
-  } catch { diaryPast.value = []; }
-  diaryLoaded.value = true;
-  diaryBusy.value = false;
+    historyRead = true;
+  } catch {
+    diaryError.value ||= '往期日记没有读到，可以重试。';
+  }
+  // Failed reads remain retryable when the card is revisited.
+  diaryLoadedDate = todayRead && historyRead ? localDate : '';
+  diaryLoading.value = false;
 }
 
 async function writeDiary() {
   if (diaryBusy.value) return;
-  diaryBusy.value = true;
+  diaryWriting.value = true;
   diaryError.value = '';
   diaryNote.value = '';
   try {
-    const result = await clientTransport.request<{ diaryId: string; title: string; content: string; mode: string; generatedBy: string }>(
-      'POST', '/v1/diaries/generate-today', { rewrite: diaryToday.value !== null },
+    const result = await clientTransport.request<{ diaryId: string; localDate: string; title: string; content: string; mode: string; generatedBy: string }>(
+      'POST', '/v1/diaries/generate-today', { rewrite: diaryToday.value?.localDate === diaryLocalDate() },
     );
-    diaryToday.value = { id: result.diaryId, localDate: diaryLocalDate(), title: result.title, content: result.content };
+    const entry = { id: result.diaryId, localDate: result.localDate, title: result.title, content: result.content };
+    diaryToday.value = entry;
+    diaryPast.value = [entry, ...diaryPast.value.filter(item => item.id !== entry.id)].slice(0, 8);
     diaryViewing.value = null;
+    diaryHistoryOpen.value = false;
     diaryNote.value = result.generatedBy === 'template' ? '已按模板写好；配置模型后我会亲手写。' : '写好了。';
     await loadDiary(true);
   } catch {
     diaryError.value = '这篇没写成，稍后再试。';
   } finally {
-    diaryBusy.value = false;
+    diaryWriting.value = false;
   }
 }
 
@@ -150,6 +171,11 @@ function closePastDiary() {
 
 // 只在真的翻到日记卡时读取，别让首页启动多两次请求。
 watch(deckIndex, index => { if (index === 3) void loadDiary(); });
+let diaryDayTimer: ReturnType<typeof setInterval> | undefined;
+const refreshDiaryOnForeground = () => {
+  if (!document.hidden && deckIndex.value === 3) void loadDiary();
+};
+
 
 /* ---------- 对话盒 ---------- */
 const identity = readCompanionIdentity();
@@ -801,6 +827,8 @@ onMounted(() => {
   if (material3) void refreshMobileSessions(); else void sessions.fetchSessions();
   void refreshPluginUI().catch(() => undefined);
   syncViewport();
+  if (material3) diaryDayTimer = setInterval(refreshDiaryOnForeground, 60_000);
+  document.addEventListener('visibilitychange', refreshDiaryOnForeground);
   window.addEventListener('resize', syncViewport);
   window.visualViewport?.addEventListener('resize', syncViewport);
   window.visualViewport?.addEventListener('scroll', syncViewport);
@@ -816,6 +844,8 @@ onBeforeUnmount(() => {
   unsubscribeConversation(); turnController.dispose();
   pluginRuntime?.destroy(); registry.dispose(); pluginState.dispose();
   finish();
+  if (diaryDayTimer) clearInterval(diaryDayTimer);
+  document.removeEventListener('visibilitychange', refreshDiaryOnForeground);
   window.removeEventListener('resize', syncViewport);
   window.visualViewport?.removeEventListener('resize', syncViewport);
   window.visualViewport?.removeEventListener('scroll', syncViewport);
@@ -947,15 +977,15 @@ onBeforeUnmount(() => {
           <component :is="'md-text-button'" type="button" class="pc-deck-new" :disabled="diaryBusy" @click="writeDiary">{{ diaryToday ? '重写' : '写一篇' }}</component>
         </div>
         <div class="pc-diary-scroll">
-          <p v-if="diaryBusy && !diaryShown" class="pc-deck-empty">正在写今天的日记…</p>
+          <p v-if="diaryBusy && !diaryShown" class="pc-deck-empty">{{ diaryWriting ? '正在写今天的日记…' : '正在读取日记…' }}</p>
           <div v-else-if="diaryHistoryOpen" class="pc-diary-list">
             <button v-for="entry in diaryPast" :key="entry.id" type="button" class="pc-deck-session" @click="openPastDiary(entry)">
               <span class="pc-deck-session-title">{{ entry.title }}</span>
               <span class="pc-deck-session-mark">{{ entry.localDate }}</span>
             </button>
-            <p v-if="!diaryPast.length" class="pc-deck-empty">还没有往期日记。</p>
+            <p v-if="!diaryPast.length && !diaryError" class="pc-deck-empty">还没有往期日记。</p>
           </div>
-          <p v-else-if="!diaryShown" class="pc-deck-empty">今天还没写。点「写一篇」记下来。</p>
+          <p v-else-if="!diaryShown" class="pc-deck-empty">{{ diaryError ? '请重试读取日记。' : '今天还没写。点「写一篇」记下来。' }}</p>
           <p v-else class="pc-diary-text">{{ diaryBody }}</p>
         </div>
         <div class="pc-deck-foot">
@@ -965,6 +995,7 @@ onBeforeUnmount(() => {
       </div>
       <p v-if="diaryNote" class="pc-deck-hint" role="status">{{ diaryNote }}</p>
       <p v-if="diaryError" class="pc-deck-hint pc-diary-error" role="alert">{{ diaryError }}</p>
+      <component v-if="diaryError" :is="'md-text-button'" type="button" :disabled="diaryBusy" @click="loadDiary(true)">重试读取日记</component>
     </section>
     </div>
     <div v-if="material3" class="pc-deck-dots" role="tablist" aria-label="卡片切换">
