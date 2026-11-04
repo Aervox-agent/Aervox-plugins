@@ -1197,14 +1197,28 @@ onBeforeUnmount(() => {
     margin: 0; pointer-events: auto;
   }
   .proactive-companion[data-platform="mobile"] .pc-stage-suggestions .pc-choice {
+    position: relative; isolation: isolate;
     min-height: 0; padding: 8px 14px; border-radius: 16px;
     flex-direction: row; align-items: center; gap: 10px;
-    background:
-      linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.03)),
-      color-mix(in srgb, var(--pc-card, #171b22) 88%, transparent);
-    backdrop-filter: blur(14px);
+    /* The glass treatment must not out-specify the Material 3 role colours:
+       keep the tonal background here and layer the sheen on top of it, so a
+       primary suggestion still tracks --md-sys-color-primary-container. */
+    background: var(--pc-card, #171b22);
     border: 1px solid var(--pc-line, rgba(255,255,255,.10));
     box-shadow: 0 10px 26px -14px rgba(0,0,0,.5);
+  }
+  .proactive-companion[data-platform="mobile"] .pc-stage-suggestions .pc-choice::before {
+    content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+    border-radius: inherit; backdrop-filter: blur(14px);
+    background: linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.03));
+  }
+  .proactive-companion[data-design-system="material3"] .pc-stage-suggestions .pc-choice {
+    background: var(--md-sys-color-surface-container);
+    border-color: var(--md-sys-color-outline-variant);
+  }
+  .proactive-companion[data-design-system="material3"] .pc-stage-suggestions .pc-choice--primary {
+    background: var(--md-sys-color-primary-container);
+    border-color: transparent;
   }
   .proactive-companion[data-platform="mobile"] .pc-stage-suggestions .pc-choice-label { flex: 0 0 auto; font-size: 14px; line-height: 20px; }
   .proactive-companion[data-platform="mobile"] .pc-stage-suggestions .pc-choice-reason {
