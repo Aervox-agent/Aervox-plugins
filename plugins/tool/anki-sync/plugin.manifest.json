@@ -5,12 +5,17 @@
     "id": "ap-tool-anki-sync",
     "displayName": "Anki 闪卡与外部题库同步器",
     "publisher": "aervox-official",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "description": "CAP-023: 兼容 Anki 文本导出与标准题库格式（TSV/CSV/JSON），批量导入闪卡并自动排期接入遗忘曲线复习系统，支持对话现场抽取闪卡自测。",
     "license": "AGPL-3.0-or-later",
     "category": "tool",
     "tags": [
       "tool"
+    ],
+    "targets": [
+      "desktop",
+      "web",
+      "cli"
     ],
     "breaking": false
   },

@@ -45,7 +45,7 @@ function selectMaterialTab(event: Event) {
       <div class="mobile-settings-chrome">
         <AervoxDialogHeader title="设置" @close="emit('update:modelValue', false)" />
         <component
-          v-if="available.length"
+          v-if="available.length > 1"
           :is="'md-tabs'"
           class="mobile-settings-material-tabs"
           role="tablist"

@@ -16,7 +16,11 @@ permissions:
   contents: read
 
 env:
-  HOST_COMMIT: ${{ inputs.host_commit || '7e3089c5aa85c8fd33b5887f5bf5059b7ddb0199' }}
+  # Pinned to the host commit that carries this round's fixes (backup scope,
+  # dependency-audit stale exceptions, blocking emulator gate). The previous
+  # pin predates them, so the audit step failed on stale minimatch exceptions
+  # that no longer exist upstream.
+  HOST_COMMIT: ${{ inputs.host_commit || '8cdce6f7210f8f66e30ea18f00b5ddf9a3e7f15a' }}
 
 jobs:
   integration:

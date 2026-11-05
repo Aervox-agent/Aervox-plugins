@@ -5,12 +5,17 @@
     "id": "ap-tool-home-assistant",
     "displayName": "Home Assistant 智能家居网关",
     "publisher": "aervox-official",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "description": "CAP-034: 联动本地 Home Assistant 智能家居，感知室内温湿度、环境照度与人体移动，支持智能灯光/开关设备控制与桌宠环境主动关怀。",
     "license": "AGPL-3.0-or-later",
     "category": "tool",
     "tags": [
       "tool"
+    ],
+    "targets": [
+      "desktop",
+      "web",
+      "cli"
     ],
     "breaking": false
   },

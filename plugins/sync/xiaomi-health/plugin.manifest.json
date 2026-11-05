@@ -5,12 +5,17 @@
     "id": "ap-sync-xiaomi-health",
     "displayName": "小米运动健康数据网关",
     "publisher": "aervox-official",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "description": "CAP-035: 对接收集小米运动健康步数、睡眠时长与卡路里消耗，评估身体疲劳度并与桌宠每日关怀和学习计划自适应联动。",
     "license": "AGPL-3.0-or-later",
     "category": "sync",
     "tags": [
       "sync"
+    ],
+    "targets": [
+      "desktop",
+      "web",
+      "cli"
     ],
     "breaking": false
   },

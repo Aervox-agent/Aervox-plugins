@@ -1,5 +1,9 @@
 # ap-sync-xiaomi-health 变更记录
 
+## 1.0.1
+
+- 声明插件适用的客户端（`metadata.targets`），包内业务权限与执行能力保持现有边界。
+
 ## 1.0.0
 
 - 首个生态标准身份；原 `xiaomi-health` 身份须通过宿主显式迁移工具转换。

@@ -10,17 +10,18 @@
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue';
 import { useUISurfaceContext } from '@aervox/ui-host';
-import { useMaterial3, useMobileBackNavigation } from '@aervox/ui/material3';
+import { useMaterial3 } from '@aervox/ui/material3';
 import { ExtensionSlot } from '@aervox/ui/primitives';
 import { AervoxBrandMark, PetWithFallback, UserQuestionComposer, readCompanionIdentity, useSessionDraft } from '@aervox/ui/companion';
 import { AervoxHttpError, createConversationController, getClientTransport, useAervoxApi, useAervoxPlugins, useAervoxSessions } from '@aervox/api-client';
 import { createUIRegistry, provideUIRegistry, createWorkbenchPluginRuntime, createPluginEventBus, createPluginStateStore, provideUIPluginContext, resolveOutgoingMessage, type BuiltinUIPlugin, type UIPluginContext } from '@aervox/ui/plugin-api';
-import { ArrowUpRight, History, MessagesSquare, MessageSquare, RotateCcw, Settings, Square, X } from 'lucide-vue-next';
+import { ArrowUpRight, Copy, History, MessagesSquare, MessageSquare, Mic, Paperclip, RotateCcw, Settings, Square, Volume2, X } from 'lucide-vue-next';
 import type { AskUserQuestionAnswerItem } from '@aervox/contracts';
 import { useDialogueTyper } from './dialogue-typer';
 import MobileSettingsDialog from './MobileSettingsDialog.vue';
 import MobileSessionsDialog from './MobileSessionsDialog.vue';
 import MobileHistoryDialog from './MobileHistoryDialog.vue';
+import { renderMarkdown } from '@aervox/ui/markdown';
 import '@aervox/ui/theme/companion';
 import type { SurfaceNavigation } from '@aervox/ui/companion';
 
@@ -42,9 +43,9 @@ const pluginApi = useAervoxPlugins();
 const learning = useAervoxApi();
 const pluginLoadError = ref(false);
 const material3 = useMaterial3();
-const mobileBack = useMobileBackNavigation();
 const mobileScreen = ref<HTMLElement>();
 const mobileFeedbackRegion = ref<HTMLElement>();
+const mobileSuggestionRegion = ref<HTMLElement>();
 // The Android composition root registers the official Material Web elements.
 // Other hosts keep their existing native controls and visual language.
 const buttonTag = (materialTag: string) => material3 ? materialTag : 'button';
@@ -59,13 +60,128 @@ const preparingSession = ref(false);
 const sessionFeedback = ref('');
 const sessionCreationError = ref('');
 const sessionListError = ref<string | null>(null);
+const sessionManaging = ref(false);
+const sessionManageError = ref<string | null>(null);
+// A stale management failure should not greet the next opening of the list.
+watch(sessionsOpen, open => { if (open) sessionManageError.value = null; });
 const mobileSessionTitle = computed(() => sessions.activeSession.value?.title ?? (!sessionsReady.value ? '正在读取会话…' : sessionListError.value ? '会话读取失败' : sessions.activeSessionId.value && sessions.activeSessionId.value !== 'web_default' ? '当前会话不可用' : '新对话'));
+
+/* ---------- 卡片堆叠（对话 / 会话 / 工具 / 日记，横向滑动切换） ---------- */
+const deckTrack = ref<HTMLDivElement>();
+const deckIndex = ref(0);
+const deckSize = computed(() => material3 ? 4 : 1);
+function onDeckScroll() {
+  const track = deckTrack.value;
+  if (!track || !track.clientWidth) return;
+  deckIndex.value = Math.min(Math.max(Math.round(track.scrollLeft / track.clientWidth), 0), deckSize.value - 1);
+}
+function goDeck(index: number) {
+  const track = deckTrack.value;
+  if (!track) return;
+  track.scrollTo({ left: index * track.clientWidth, behavior: 'smooth' });
+  deckIndex.value = index;
+}
+
+/* ---------- 日记（今天 + 往期） ---------- */
+interface DiaryEntry { id: string; localDate: string; title: string; content: string }
+const diaryToday = ref<DiaryEntry | null>(null);
+const diaryPast = ref<DiaryEntry[]>([]);
+/** 非空表示正在回看往期；空表示看今天。 */
+const diaryViewing = ref<DiaryEntry | null>(null);
+const diaryLoading = ref(false);
+const diaryWriting = ref(false);
+const diaryBusy = computed(() => diaryLoading.value || diaryWriting.value);
+const diaryError = ref('');
+const diaryNote = ref('');
+let diaryLoadedDate = '';
+const diaryHistoryOpen = ref(false);
+const diaryShown = computed(() => diaryViewing.value ?? diaryToday.value);
+const diaryTitle = computed(() => diaryShown.value?.title ?? '今天的日记');
+const diaryBody = computed(() => {
+  // 服务端把标题作为首行写入正文，卡片已单独显示标题，这里去掉重复的那一行与首尾空行。
+  return (diaryShown.value?.content ?? '').replace(/^\s*标题[：:].*\n+/, '').trim();
+});
+const diaryLocalDate = () => new Intl.DateTimeFormat('en-CA', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+
+async function loadDiary(force = false) {
+  const localDate = diaryLocalDate();
+  if (diaryLoading.value || (diaryWriting.value && !force) || (diaryLoadedDate === localDate && !force)) return;
+  // A cached yesterday must never remain labelled as today's diary.
+  if (diaryLoadedDate && diaryLoadedDate !== localDate
+    || diaryToday.value && diaryToday.value.localDate !== localDate) {
+    diaryToday.value = null; diaryViewing.value = null; diaryHistoryOpen.value = false; diaryNote.value = '';
+  }
+  diaryLoading.value = true;
+  diaryError.value = '';
+  let todayRead = false;
+  let historyRead = false;
+  try {
+    diaryToday.value = await clientTransport.request<DiaryEntry>('GET', `/v1/diaries?localDate=${localDate}`);
+    todayRead = true;
+  } catch (error) {
+    if (error instanceof AervoxHttpError && error.status === 404) {
+      diaryToday.value = null;
+      todayRead = true;
+    } else {
+      diaryError.value = '今天的日记没有读到，可以重试。';
+    }
+  }
+  try {
+    const list = await clientTransport.request<{ items: DiaryEntry[] }>('GET', '/v1/diaries?limit=8');
+    diaryPast.value = list.items ?? [];
+    historyRead = true;
+  } catch {
+    diaryError.value ||= '往期日记没有读到，可以重试。';
+  }
+  // Failed reads remain retryable when the card is revisited.
+  diaryLoadedDate = todayRead && historyRead ? localDate : '';
+  diaryLoading.value = false;
+}
+
+async function writeDiary() {
+  if (diaryBusy.value) return;
+  diaryWriting.value = true;
+  diaryError.value = '';
+  diaryNote.value = '';
+  try {
+    const result = await clientTransport.request<{ diaryId: string; localDate: string; title: string; content: string; mode: string; generatedBy: string }>(
+      'POST', '/v1/diaries/generate-today', { rewrite: diaryToday.value?.localDate === diaryLocalDate() },
+    );
+    const entry = { id: result.diaryId, localDate: result.localDate, title: result.title, content: result.content };
+    diaryToday.value = entry;
+    diaryPast.value = [entry, ...diaryPast.value.filter(item => item.id !== entry.id)].slice(0, 8);
+    diaryViewing.value = null;
+    diaryHistoryOpen.value = false;
+    diaryNote.value = result.generatedBy === 'template' ? '已按模板写好；配置模型后我会亲手写。' : '写好了。';
+    await loadDiary(true);
+  } catch {
+    diaryError.value = '这篇没写成，稍后再试。';
+  } finally {
+    diaryWriting.value = false;
+  }
+}
+
+function openPastDiary(entry: DiaryEntry) {
+  diaryViewing.value = entry;
+  diaryHistoryOpen.value = false;
+}
+function closePastDiary() {
+  diaryViewing.value = null;
+}
+
+// 只在真的翻到日记卡时读取，别让首页启动多两次请求。
+watch(deckIndex, index => { if (index === 3) void loadDiary(); });
+let diaryDayTimer: ReturnType<typeof setInterval> | undefined;
+const refreshDiaryOnForeground = () => {
+  if (!document.hidden && deckIndex.value === 3) void loadDiary();
+};
+
 
 /* ---------- 对话盒 ---------- */
 const identity = readCompanionIdentity();
 const companionName = ref(identity.companionName);
 const greeting = '你好' + (identity.userAddress === '你' ? '' : '，' + identity.userAddress) + '，我是' + identity.companionName
-  + (props.nativeRuntime ? '。想聊什么，直接告诉我。首次使用请在设置中配置模型服务。' : '。今天想继续昨天的进度，还是先安静专注一会儿？');
+  + (props.nativeRuntime ? '。想聊什么，直接告诉我。' : '。今天想继续昨天的进度，还是先安静专注一会儿？');
 const dialogueCtx = ref(props.nativeRuntime ? '本机对话' : '主动陪伴 · 每日开场');
 const { shown: dialogueText, streaming: dialogueTyping, say, appendDelta, finish } = useDialogueTyper(greeting);
 
@@ -92,6 +208,79 @@ function relativeDay(iso: string): string {
 const sending = ref(false);
 const stopping = ref(false);
 const waitingForReply = ref(false);
+/** Device work is announced by tool name only; arguments can contain user text. */
+const toolActivity = ref('');
+const copyFeedback = ref('');
+let copyTimer: ReturnType<typeof setTimeout> | undefined;
+/** Copies only the text already shown, so a partial answer cannot be mistaken for a full one. */
+async function copyReply() {
+  const text = dialogueText.value;
+  if (!text.trim() || dialogueTyping.value) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    copyFeedback.value = '已复制这次回复。';
+  } catch {
+    copyFeedback.value = '这台设备不允许直接复制，可以长按回复文字选择。';
+  }
+  clearTimeout(copyTimer);
+  copyTimer = setTimeout(() => { copyFeedback.value = ''; }, 4000);
+}
+// inject() only resolves during setup; event handlers must reuse this capture.
+const clientTransport = getClientTransport();
+const dictationSupported = typeof clientTransport.speechInput === 'function';
+const dictating = ref(false);
+const dictationFeedback = ref('');
+let dictationTimer: ReturnType<typeof setTimeout> | undefined;
+const DICTATION_ERRORS: Record<string, string> = {
+  RECORD_AUDIO_REQUIRED: '需要麦克风权限，请在系统设置中允许后重试。',
+  NO_SPEECH: '没有听到内容，请再试一次。',
+  SPEECH_INPUT_TIMEOUT: '聆听超时，请再试一次。',
+  SPEECH_INPUT_BUSY: '正在聆听中，请稍候。',
+  SPEECH_INPUT_UNAVAILABLE: '这台手机没有可用的语音识别。',
+  SPEECH_INPUT_FAILED: '语音识别没有启动，请稍后再试。',
+  CLOSED: '语音识别没有启动，请稍后再试。',
+};
+/** One bounded recognition fills the draft; the phone owns the recognizer. */
+async function dictate() {
+  if (!dictationSupported || dictating.value) return;
+  dictating.value = true;
+  dictationFeedback.value = '正在聆听…';
+  try {
+    const { text } = await clientTransport.speechInput!();
+    whisperText.value = whisperText.value ? `${whisperText.value} ${text}` : text;
+    dictationFeedback.value = '已识别，可继续编辑或发送。';
+  } catch (error) {
+    dictationFeedback.value = DICTATION_ERRORS[error instanceof Error ? error.message : '']
+      ?? '语音识别没有开始，可以稍后再试。';
+  } finally {
+    dictating.value = false;
+    clearTimeout(dictationTimer);
+    dictationTimer = setTimeout(() => { dictationFeedback.value = ''; }, 4000);
+  }
+}
+const speechSupported = typeof clientTransport.speakText === 'function';
+const speechFeedback = ref('');
+let speechTimer: ReturnType<typeof setTimeout> | undefined;
+/** Reads the reply that is already on screen; the phone owns the speech engine. */
+async function readAloud() {
+  const text = dialogueText.value;
+  if (!text.trim() || dialogueTyping.value || !speechSupported) return;
+  speechFeedback.value = '';
+  try {
+    await clientTransport.speakText!({ text });
+    speechFeedback.value = '正在朗读这次回复。';
+  } catch (error) {
+    speechFeedback.value = error instanceof Error && error.message === 'SPEECH_UNAVAILABLE'
+      ? '这台手机没有可用的朗读引擎。'
+      : '朗读没有开始，可以稍后再试。';
+  }
+  clearTimeout(speechTimer);
+  speechTimer = setTimeout(() => { speechFeedback.value = ''; }, 4000);
+}
+const DEVICE_TOOL_LABELS: Record<string, string> = {
+  device_tap: '正在点击屏幕…', device_swipe: '正在滑动屏幕…', device_key: '正在按键…',
+  device_text: '正在输入文字…', device_launch_app: '正在打开应用…', device_info: '正在读取设备信息…',
+};
 const turnFeedback = ref<{ kind: 'connection-error' | 'observer-error' | 'turn-error' | 'cancel-error' | 'stopped' | 'completed'; message: string; action?: 'configure-model' }>();
 interface FailedTurn {
   content: string;
@@ -99,7 +288,7 @@ interface FailedTurn {
   sessionId?: string;
 }
 const failedTurn = ref<FailedTurn>();
-const turnController = createConversationController(getClientTransport(), surface.signal);
+const turnController = createConversationController(clientTransport, surface.signal);
 const conversationState = ref(turnController.state);
 const unsubscribeConversation = turnController.subscribe(state => { conversationState.value = state; });
 let pluginRuntime: ReturnType<typeof createWorkbenchPluginRuntime> | undefined;
@@ -136,6 +325,7 @@ const interactionBusy = ref(false);
 let stopPreparing = false;
 let hasTurnReply = false;
 const sessionSwitchLocked = computed(() => sending.value || stopping.value || interactionBusy.value || sessionChanging.value
+  || sessionManaging.value
   || ['submitting', 'observing', 'awaiting-input', 'awaiting-approval', 'observer-error'].includes(conversationState.value.status)
   || conversationState.value.retryAvailable === true);
 const switchLockReason = computed(() => conversationState.value.retryAvailable && !conversationState.value.turnId
@@ -187,13 +377,19 @@ function dialogueCallbacks(previousContext: string, preserveReply = false) {
     },
     onDone() {
       if (surface.signal.aborted) return;
-      finish(); waitingForReply.value = false;
+      finish(); waitingForReply.value = false; toolActivity.value = '';
       dialogueCtx.value = turnController.state.question ? '等待你的回答' : turnController.state.approval ? '等待工具授权' : receivedReply ? companionName.value + ' · 刚刚回复' : previousContext;
       turnFeedback.value = receivedReply || turnController.state.question || turnController.state.approval ? undefined : {kind: 'completed', message: '本次回复已完成。'};
     },
     onError(error: unknown) { throw error; },
     onUserQuestion() { finish(); waitingForReply.value = false; dialogueCtx.value = '等待你的回答'; },
     onToolApproval() { finish(); waitingForReply.value = false; dialogueCtx.value = '等待工具授权'; },
+    onEvent(event: { eventType?: string; data?: unknown }) {
+      const name = (event.data as { name?: unknown } | undefined)?.name;
+      if (event.eventType === 'tool_request' && typeof name === 'string' && DEVICE_TOOL_LABELS[name]) {
+        toolActivity.value = DEVICE_TOOL_LABELS[name]!;
+      } else if (event.eventType === 'tool_result') toolActivity.value = '';
+    },
     onPluginEvent(eventType: string, data: unknown) { pluginEvents.emit(eventType, data); },
   };
 }
@@ -352,15 +548,55 @@ const suggestions = computed<Suggestion[]>(() => {
 /* ---------- 悄悄话输入（淡化） ---------- */
 const whisperOpen = ref(false);
 const whisperText = ref('');
+// Text attachments ride along with the next message (images await a multimodal
+// bridge; a text file is an honest first slice of the attachment story).
+const attachment = ref<{ name: string; text: string } | null>(null);
+const attachmentSupported = typeof clientTransport.pickTextFile === 'function';
+// Match the host draft key namespace so the native cache allowlist accepts it.
+const attachmentKey = () => `aervox-mobile-draft:attachment-${sessions.activeSessionId.value || 'none'}`;
+function persistAttachment() {
+  try {
+    const target = props.draftStorage ?? (typeof localStorage === 'undefined' ? undefined : localStorage);
+    if (!target) return;
+    if (attachment.value) target.setItem(attachmentKey(), JSON.stringify(attachment.value));
+    else target.removeItem(attachmentKey());
+  } catch { /* Storage is best-effort; the chip still works without it. */ }
+}
+function restoreAttachment() {
+  try {
+    const target = props.draftStorage ?? (typeof localStorage === 'undefined' ? undefined : localStorage);
+    const raw = target?.getItem(attachmentKey());
+    if (raw) attachment.value = JSON.parse(raw) as { name: string; text: string };
+  } catch { /* A corrupt draft is simply absent. */ }
+}
+restoreAttachment();
+watch(() => sessions.activeSessionId.value, () => {
+  attachment.value = null;
+  restoreAttachment();
+});
+async function pickAttachment() {
+  if (!attachmentSupported) return;
+  try {
+    const picked = await clientTransport.pickTextFile!();
+    // Keep the JSON envelope under the host draft value cap (32 KiB).
+    const budget = 28 * 1024;
+    const text = picked.text.length > budget
+      ? `${picked.text.slice(0, budget)}\n（附件超过 28 KiB，已截断）`
+      : picked.text;
+    attachment.value = { name: picked.name, text };
+    persistAttachment();
+  } catch (error) {
+    // Cancellation is quiet; a broken picker must be visible, not swallowed.
+    const code = error instanceof Error ? error.message : '';
+    if (code !== 'FILE_PICK_CANCELLED') dictationFeedback.value = '文件选择没有打开，可以稍后再试。';
+  }
+}
 const whisperInput = ref<HTMLInputElement | HTMLTextAreaElement>();
 const whisperPill = ref<HTMLButtonElement>();
 const drafts = useSessionDraft({ input: whisperText, sessionId: sessions.activeSessionId, storage: props.draftStorage,
   enabled: computed(() => material3), onRestore: () => { if (!sessionsOpen.value && !historyOpen.value && !settingsOpen.value) whisperOpen.value = true; } });
-let inputLayer: ReturnType<NonNullable<typeof mobileBack>['registerLayer']> | undefined;
-watch(whisperOpen, open => {
-  if (open && material3) inputLayer ??= mobileBack?.registerLayer({ onBack: () => { void closeWhisper(); } });
-  else { inputLayer?.close(); inputLayer = undefined; }
-}, { immediate: true });
+// 手机输入条常驻（没有收起态），因此不再注册返回层：返回键应交给当前弹层，
+// 而不是收起一个永远可见的输入框。
 function resizeWhisper() {
   if (!material3 || !(whisperInput.value instanceof HTMLTextAreaElement)) return;
   const input = whisperInput.value;
@@ -401,6 +637,8 @@ async function openWhisper() {
   whisperOpen.value = true;
   await nextTick();
   whisperInput.value?.focus();
+  // 手机输入条常驻：再次聚焦也要按当前内容重测高度（草稿恢复、窗口宽度变化后同理）。
+  scheduleWhisperResize();
 }
 async function closeWhisper() {
   whisperOpen.value = false;
@@ -419,7 +657,10 @@ async function sendWhisper() {
   const raw = whisperText.value;
   const text = raw.trim();
   if (!text || sending.value) return;
-  const sent = await sendTurn(text, 'whisper', material3 ? raw : undefined);
+  const attached = attachment.value;
+  const composed = attached ? `${text}\n\n（附件：${attached.name}）\n${attached.text}` : text;
+  const sent = await sendTurn(composed, 'whisper', material3 ? raw : undefined);
+  if (sent && attached) { attachment.value = null; persistAttachment(); }
   if (!material3 && sent && whisperText.value.trim() === text) {
     whisperText.value = '';
     closeWhisper();
@@ -471,7 +712,7 @@ function openMobileHistory(id = sessions.activeSessionId.value, title = sessions
 }
 function resetMobilePresentation() {
   turnController.reset(); failedTurn.value = undefined; turnFeedback.value = undefined;
-  hasTurnReply = false; waitingForReply.value = false; sessionFeedback.value = ''; whisperOpen.value = false;
+  hasTurnReply = false; waitingForReply.value = false; sessionFeedback.value = ''; whisperOpen.value = false; toolActivity.value = '';
 }
 function selectMobileSession(id: string) {
   if (sessionSwitchLocked.value || !sessions.sessions.value.some(item => item.id === id)) return;
@@ -498,6 +739,70 @@ async function createMobileSession() {
   finally { sessionChanging.value = false; }
 }
 
+/* ---------- 会话管理（改名 / 删除） ---------- */
+/** Map a definite host rejection to an action the user can take; never claim success. */
+function sessionFailure(error: unknown, fallback: string): string {
+  if (error instanceof AervoxHttpError) {
+    if (error.status === 409 && error.code === 'STOP_REPLY_BEFORE_DELETING') return '当前会话仍在回答或等待交互，请先停止再删除。';
+    if (error.status === 404) return '该会话已不存在，列表已刷新。';
+    if (error.status === 400) return '名称不合法，标题需为 1–200 个字符。';
+  }
+  return fallback;
+}
+async function renameMobileSession(id: string, title: string) {
+  if (sessionManaging.value) return;
+  if (!sessions.sessions.value.some(item => item.id === id)) return;
+  sessionManaging.value = true; sessionManageError.value = null; sessionFeedback.value = ''; sessionCreationError.value = '';
+  try {
+    const updated = await sessions.renameSession(id, { title });
+    if (surface.signal.aborted) return;
+    if (!updated) throw new Error('SESSION_NOT_FOUND');
+    // The list already holds the acknowledged title; the notice only reports it.
+    sessionFeedback.value = `已改名为「${updated.title}」。`;
+  } catch (error) {
+    if (surface.signal.aborted) return;
+    sessionManageError.value = sessionFailure(error, '改名没有成功，名称保持不变。可以重试。');
+    if (error instanceof AervoxHttpError && error.status === 404) await refreshMobileSessions();
+  } finally { sessionManaging.value = false; }
+}
+async function deleteMobileSession(id: string) {
+  if (sessionManaging.value) return;
+  const target = sessions.sessions.value.find(item => item.id === id);
+  if (!target) return;
+  const wasActive = id === sessions.activeSessionId.value;
+  // A running or awaiting turn owns its session; stopping is a separate, explicit act.
+  if (wasActive && sessionSwitchLocked.value) {
+    sessionManageError.value = '当前会话仍在回答或等待交互，请先停止再删除。';
+    return;
+  }
+  // Deleting a conversation must not leave its unsent draft behind in the host
+  // cache. Clearing the input first removes that stored draft; a failed delete
+  // restores the same text so the user never loses it.
+  const draft = wasActive ? whisperText.value : '';
+  // Whether a replacement conversation survives decides the reported destination.
+  const remaining = sessions.sessions.value.filter(item => item.id !== id).length;
+  if (draft) whisperText.value = '';
+  sessionManaging.value = true; sessionManageError.value = null; sessionFeedback.value = ''; sessionCreationError.value = '';
+  try {
+    await sessions.deleteSession(id);
+    if (surface.signal.aborted) return;
+    if (wasActive) {
+      resetMobilePresentation();
+      say(remaining
+        ? '已删除当前会话。可以在会话列表里继续选择，或直接开始新的对话。'
+        : '已删除当前会话。新的对话已准备好。', '会话已删除');
+    }
+    sessionFeedback.value = wasActive
+      ? (draft ? '当前会话已删除，未发送的草稿一并清除。' : remaining ? '当前会话已删除，已切换到其他会话。' : '当前会话已删除，新的对话已准备好。')
+      : `已删除「${target.title}」。`;
+  } catch (error) {
+    if (surface.signal.aborted) return;
+    if (draft && !whisperText.value) whisperText.value = draft;
+    sessionManageError.value = sessionFailure(error, '删除结果未能确认，列表保持不变。可以刷新后重试。');
+    if (error instanceof AervoxHttpError && error.status === 404) await refreshMobileSessions();
+  } finally { sessionManaging.value = false; }
+}
+
 /* ---------- 回到默认工作台（逃生口） ---------- */
 function backToDefaultSurface() { props.surfaceNavigation?.openDefault(); }
 
@@ -522,6 +827,8 @@ onMounted(() => {
   if (material3) void refreshMobileSessions(); else void sessions.fetchSessions();
   void refreshPluginUI().catch(() => undefined);
   syncViewport();
+  if (material3) diaryDayTimer = setInterval(refreshDiaryOnForeground, 60_000);
+  document.addEventListener('visibilitychange', refreshDiaryOnForeground);
   window.addEventListener('resize', syncViewport);
   window.visualViewport?.addEventListener('resize', syncViewport);
   window.visualViewport?.addEventListener('scroll', syncViewport);
@@ -529,12 +836,16 @@ onMounted(() => {
 });
 onBeforeUnmount(() => {
   whisperDisposed = true;
+  clearTimeout(copyTimer);
+  clearTimeout(speechTimer);
+  clearTimeout(dictationTimer);
   whisperResizeObserver?.disconnect();
   whisperResizeObserver = undefined;
-  inputLayer?.dispose(); inputLayer = undefined;
   unsubscribeConversation(); turnController.dispose();
   pluginRuntime?.destroy(); registry.dispose(); pluginState.dispose();
   finish();
+  if (diaryDayTimer) clearInterval(diaryDayTimer);
+  document.removeEventListener('visibilitychange', refreshDiaryOnForeground);
   window.removeEventListener('resize', syncViewport);
   window.visualViewport?.removeEventListener('resize', syncViewport);
   window.visualViewport?.removeEventListener('scroll', syncViewport);
@@ -555,6 +866,8 @@ onBeforeUnmount(() => {
     <header class="pc-header">
       <div class="pc-brand"><AervoxBrandMark class="pc-brand-mark" :size="28" aria-hidden="true" /><span>思隅</span></div>
       <div class="pc-top-right">
+        <component v-if="material3" :is="'md-icon-button'" class="pc-quiet-btn" type="button" title="回看当前会话" aria-label="回看当前会话" :disabled="!sessions.activeSession.value" @click="openMobileHistory()"><History :size="24" aria-hidden="true" /></component>
+        <component v-if="material3" :is="'md-icon-button'" class="pc-quiet-btn" type="button" title="设置" aria-label="打开设置" @click="settingsOpen = true"><Settings :size="24" aria-hidden="true" /></component>
         <component :is="buttonTag('md-icon-button')" v-if="!material3" class="pc-quiet-btn" type="button" title="设置" aria-label="打开设置" @click="settingsOpen = true"><Settings :size="material3 ? 24 : 18" aria-hidden="true" /></component>
         <component :is="buttonTag('md-icon-button')" v-if="surfaceNavigation && !material3" class="pc-quiet-btn" type="button" title="回到完整工作台" aria-label="回到完整工作台" @click="backToDefaultSurface"><ArrowUpRight :size="material3 ? 24 : 19" aria-hidden="true" /></component>
       </div>
@@ -567,9 +880,12 @@ onBeforeUnmount(() => {
         <div class="pc-pet-status">{{ companionStatus }}</div>
         <PetWithFallback :show-fallback-while-loading="material3" />
       </div>
+      <!-- 建议贴着角色出现（手机）：说出口的建议，而不是页面底部的一条横幅。 -->
+      <div v-if="material3" ref="mobileSuggestionRegion" class="pc-stage-suggestions" />
     </div>
 
-    <section class="pc-dialogue" aria-label="陪伴对话">
+    <div class="pc-deck-track" ref="deckTrack" @scroll.passive="onDeckScroll">
+    <section class="pc-dialogue pc-deck-slide" aria-label="陪伴对话">
       <div class="pc-dialogue-name">{{ companionName }}</div>
       <div class="pc-dialogue-box">
         <p v-if="waitingForReply" class="pc-dialogue-waiting" role="status">
@@ -577,9 +893,19 @@ onBeforeUnmount(() => {
           <span v-else class="pc-waiting-dots" aria-hidden="true"><i /><i /><i /></span>
           <span>正在等待回复…</span>
         </p>
+        <!-- Typing stays plain so the caret lands on real characters; a finished
+             answer renders the same safe markdown the history panel uses. -->
+        <div v-else-if="!dialogueTyping && dialogueText.trim()" class="pc-dialogue-text markdown-body" aria-live="polite" v-html="renderMarkdown(dialogueText)" />
         <p v-else class="pc-dialogue-text" aria-live="polite">{{ dialogueText }}<span v-if="dialogueTyping" class="pc-caret" aria-hidden="true" /></p>
         <div class="pc-dialogue-foot">
           <span class="pc-dialogue-ctx">{{ dialogueCtx }}</span>
+          <span v-if="toolActivity" class="pc-dialogue-ctx pc-tool-activity" role="status">{{ toolActivity }}</span>
+          <span v-if="copyFeedback" class="pc-dialogue-ctx pc-copy-feedback" role="status">{{ copyFeedback }}</span>
+          <span v-if="speechFeedback" class="pc-dialogue-ctx pc-copy-feedback" role="status">{{ speechFeedback }}</span>
+          <component v-if="material3" :is="'md-icon-button'" class="pc-copy" type="button" aria-label="复制这次回复"
+            :disabled="dialogueTyping || !dialogueText.trim()" @click="copyReply"><Copy :size="18" aria-hidden="true" /></component>
+          <component v-if="material3 && speechSupported" :is="'md-icon-button'" class="pc-speak" type="button" aria-label="朗读这次回复"
+            :disabled="dialogueTyping || !dialogueText.trim()" @click="readAloud"><Volume2 :size="18" aria-hidden="true" /></component>
         </div>
       </div>
       <Teleport :to="mobileFeedbackRegion" :disabled="!material3 || !mobileFeedbackRegion">
@@ -604,6 +930,80 @@ onBeforeUnmount(() => {
       </Teleport>
     </section>
 
+    <section v-if="material3" class="pc-deck-slide" aria-label="会话">
+      <div class="pc-dialogue-name">会话</div>
+      <div class="pc-dialogue-box pc-deck-box">
+        <div class="pc-deck-head">
+          <span class="pc-deck-current">{{ mobileSessionTitle }}</span>
+          <component :is="'md-filled-tonal-button'" type="button" class="pc-deck-new" :disabled="sessionSwitchLocked || sessions.loading.value" @click="createMobileSession()">新建对话</component>
+        </div>
+        <ul v-if="sessions.sessions.value.length" class="pc-deck-sessions">
+          <li v-for="item in sessions.sessions.value.slice(0, 3)" :key="item.id">
+            <button type="button" class="pc-deck-session" :class="{ 'is-active': item.id === sessions.activeSessionId.value }"
+              :disabled="sessionSwitchLocked" @click="selectMobileSession(item.id)">
+              <span class="pc-deck-session-title">{{ item.title }}</span>
+              <span v-if="item.id === sessions.activeSessionId.value" class="pc-deck-session-mark">当前</span>
+            </button>
+          </li>
+        </ul>
+        <p v-else class="pc-deck-empty">{{ sessions.loading.value ? '正在读取会话…' : '还没有已保存的会话。' }}</p>
+        <div class="pc-deck-foot">
+          <component :is="'md-text-button'" type="button" aria-label="会话列表" @click="sessionsOpen = true">全部会话</component>
+        </div>
+      </div>
+    </section>
+
+    <section v-if="material3" class="pc-deck-slide" aria-label="工具">
+      <div class="pc-dialogue-name">工具</div>
+      <div class="pc-dialogue-box pc-deck-box pc-deck-box--tools">
+        <div class="pc-deck-tools">
+          <button v-if="attachmentSupported" type="button" class="pc-home-tool" aria-label="添加文本附件"
+            :disabled="preparingSession || sessionChanging || !!attachment" @click="pickAttachment">
+            <Paperclip :size="20" aria-hidden="true" /><span>{{ attachment ? '已附加文件' : '附加文件' }}</span>
+          </button>
+          <button v-if="dictationSupported" type="button" class="pc-home-tool" :aria-label="dictating ? '正在聆听' : '语音输入'"
+            :disabled="dictating || preparingSession || sessionChanging" @click="dictate">
+            <Mic :size="20" aria-hidden="true" /><span>{{ dictating ? '正在聆听…' : '语音输入' }}</span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <section v-if="material3" class="pc-deck-slide" aria-label="日记">
+      <div class="pc-dialogue-name">日记</div>
+      <div class="pc-dialogue-box pc-deck-box">
+        <div class="pc-deck-head">
+          <span class="pc-deck-current">{{ diaryTitle }}</span>
+          <component :is="'md-text-button'" type="button" class="pc-deck-new" :disabled="diaryBusy" @click="writeDiary">{{ diaryToday ? '重写' : '写一篇' }}</component>
+        </div>
+        <div class="pc-diary-scroll">
+          <p v-if="diaryBusy && !diaryShown" class="pc-deck-empty">{{ diaryWriting ? '正在写今天的日记…' : '正在读取日记…' }}</p>
+          <div v-else-if="diaryHistoryOpen" class="pc-diary-list">
+            <button v-for="entry in diaryPast" :key="entry.id" type="button" class="pc-deck-session" @click="openPastDiary(entry)">
+              <span class="pc-deck-session-title">{{ entry.title }}</span>
+              <span class="pc-deck-session-mark">{{ entry.localDate }}</span>
+            </button>
+            <p v-if="!diaryPast.length && !diaryError" class="pc-deck-empty">还没有往期日记。</p>
+          </div>
+          <p v-else-if="!diaryShown" class="pc-deck-empty">{{ diaryError ? '请重试读取日记。' : '今天还没写。点「写一篇」记下来。' }}</p>
+          <p v-else class="pc-diary-text">{{ diaryBody }}</p>
+        </div>
+        <div class="pc-deck-foot">
+          <component :is="'md-text-button'" v-if="diaryViewing" type="button" @click="closePastDiary()">回到今天</component>
+          <component :is="'md-text-button'" v-else type="button" @click="diaryHistoryOpen = !diaryHistoryOpen">{{ diaryHistoryOpen ? '收起' : '往期' }}</component>
+        </div>
+      </div>
+      <p v-if="diaryNote" class="pc-deck-hint" role="status">{{ diaryNote }}</p>
+      <p v-if="diaryError" class="pc-deck-hint pc-diary-error" role="alert">{{ diaryError }}</p>
+      <component v-if="diaryError" :is="'md-text-button'" type="button" :disabled="diaryBusy" @click="loadDiary(true)">重试读取日记</component>
+    </section>
+    </div>
+    <div v-if="material3" class="pc-deck-dots" role="tablist" aria-label="卡片切换">
+      <button v-for="(label, index) in ['对话', '会话', '工具', '日记']" :key="label" type="button" role="tab"
+        class="pc-deck-dot" :class="{ 'is-active': deckIndex === index }" :aria-selected="deckIndex === index"
+        :aria-label="'切换到' + label" @click="goDeck(index)" />
+    </div>
+
     <section v-if="conversationState.question" class="pc-interaction" aria-label="回答问题">
       <UserQuestionComposer :question-data="conversationState.question" :submitting="interactionBusy" @submit="answerQuestion" />
     </section>
@@ -613,6 +1013,7 @@ onBeforeUnmount(() => {
       <component :is="buttonTag('md-text-button')" type="button" :disabled="interactionBusy || sending" @click="decideApproval('denied')">拒绝</component>
     </section>
 
+    <Teleport :to="mobileSuggestionRegion" :disabled="!material3 || !mobileSuggestionRegion">
     <section v-if="!whisperOpen && suggestions.length" class="pc-choices" aria-label="今日建议">
       <component :is="buttonTag('button')"
         v-for="(card, index) in suggestions"
@@ -628,6 +1029,7 @@ onBeforeUnmount(() => {
         <span class="pc-choice-reason">{{ card.reason }}</span>
       </component>
     </section>
+    </Teleport>
     <ExtensionSlot name="companion:cards" wrapper-class="pc-plugin-cards" />
     <p v-if="pluginLoadError" class="pc-mobile-session-feedback" role="alert">扩展加载失败。<button type="button" @click="refreshPluginUI().catch(() => undefined)">重试加载</button></p>
     </main>
@@ -636,17 +1038,17 @@ onBeforeUnmount(() => {
     <div v-if="material3" ref="mobileFeedbackRegion" class="pc-mobile-feedback" />
     <p v-if="preparingSession || sessionChanging" class="pc-mobile-preparing" role="status">正在准备新对话，草稿会保留…</p>
     <p v-if="material3 && sessionFeedback" class="pc-mobile-session-feedback" role="alert">{{ sessionFeedback }}</p>
-    <nav v-if="material3" class="pc-mobile-actions" aria-label="移动端操作">
-      <component :is="'md-text-button'" type="button" aria-label="会话列表" @click="sessionsOpen = true"><MessagesSquare slot="icon" :size="20" />会话</component>
-      <component :is="'md-text-button'" type="button" aria-label="回看当前会话" :disabled="!sessions.activeSession.value" @click="openMobileHistory()"><History slot="icon" :size="20" />回看</component>
-      <component :is="'md-icon-button'" type="button" aria-label="打开设置" @click="settingsOpen = true"><Settings :size="24" /></component>
-    </nav>
+    <p v-if="material3 && dictationFeedback" class="pc-mobile-status" role="status">{{ dictationFeedback }}</p>
     <aside class="pc-whisper" :class="{ 'pc-whisper--open': whisperOpen }" aria-label="对话输入">
       <template v-if="!whisperOpen && !material3">
         <component :is="buttonTag('md-filled-tonal-button')" ref="whisperPill" type="button" class="pc-whisper-pill" @click="openWhisper"><MessageSquare :slot="material3 ? 'icon' : undefined" :size="material3 ? 20 : 15" aria-hidden="true" /><span>悄悄对{{ companionName }}说…</span></component>
         <component :is="buttonTag('md-filled-tonal-button')" v-if="canStop" type="button" class="pc-stop" :disabled="stopping" @click="stopTurn"><Square :slot="material3 ? 'icon' : undefined" :size="material3 ? 18 : 12" aria-hidden="true" />{{ stopping ? '停止中' : '停止' }}</component>
       </template>
       <div v-else class="pc-whisper-input">
+        <span v-if="material3 && attachment" class="pc-attachment-chip">
+          <Paperclip :size="13" aria-hidden="true" />{{ attachment.name }}
+          <button type="button" class="pc-attachment-remove" aria-label="移除附件" @click="attachment = null; persistAttachment()"><X :size="12" aria-hidden="true" /></button>
+        </span>
         <label v-if="material3" class="pc-whisper-label" for="pc-material-whisper">悄悄对{{ companionName }}说</label>
         <textarea v-if="material3" :readonly="preparingSession || sessionChanging" id="pc-material-whisper" ref="whisperInput" v-model="whisperText" rows="1"
           :aria-label="'悄悄对' + companionName + '说'" placeholder="输入消息…" enterkeyhint="enter"
@@ -655,12 +1057,14 @@ onBeforeUnmount(() => {
           :placeholder="'想到什么，直接告诉' + companionName" enterkeyhint="send" @keydown="onWhisperKeydown" />
         <component :is="buttonTag('md-filled-tonal-button')" v-if="canStop" type="button" class="pc-stop" :disabled="stopping" @click="stopTurn"><Square :slot="material3 ? 'icon' : undefined" :size="material3 ? 18 : 12" aria-hidden="true" />{{ stopping ? '停止中' : '停止' }}</component>
         <component :is="buttonTag('md-filled-button')" v-else type="button" :disabled="!whisperText.trim() || material3 && (sessionSwitchLocked || !sessionsReady)" @click="sendWhisper()">发送</component>
-        <component :is="buttonTag('md-icon-button')" type="button" v-if="!material3 || whisperOpen" class="pc-whisper-close" title="收起" aria-label="收起输入" @click="closeWhisper"><X :size="material3 ? 24 : 18" aria-hidden="true" /></component>
+                <component :is="buttonTag('md-icon-button')" type="button" v-if="!material3" class="pc-whisper-close" title="收起" aria-label="收起输入" @click="closeWhisper"><X :size="18" aria-hidden="true" /></component>
       </div>
     </aside>
     <MobileSessionsDialog v-if="material3" v-model="sessionsOpen" :sessions="sessions.sessions.value" :active-session-id="sessions.activeSessionId.value"
       :loading="sessions.loading.value" :error="sessionListError" :notice="sessionCreationError || sessionFeedback" :changing="sessionChanging" :switch-locked="sessionSwitchLocked" :lock-reason="switchLockReason"
-      @refresh="refreshMobileSessions" @new="createMobileSession" @select="selectMobileSession" @history="session => openMobileHistory(session.id, session.title)" />
+      :managing="sessionManaging" :manage-error="sessionManageError"
+      @refresh="refreshMobileSessions" @new="createMobileSession" @select="selectMobileSession" @history="session => openMobileHistory(session.id, session.title)"
+      @rename="renameMobileSession" @delete="deleteMobileSession" />
     <MobileHistoryDialog v-if="material3" v-model="historyOpen" :session-id="historySessionId" :title="historyTitle" />
     <MobileSettingsDialog v-model="settingsOpen" :panels="props.settingsPanels" />
     <ExtensionSlot name="companion:drawers" />
@@ -686,6 +1090,9 @@ onBeforeUnmount(() => {
   position: fixed;
   inset: var(--pc-viewport-top, 0px) 0 auto;
   height: var(--pc-viewport-height, 100dvh);
+  /* The JS viewport var can go stale across window resizes (split screen,
+   * freeform); dvh always tracks the real viewport and clamps the overshoot. */
+  max-height: 100dvh;
   width: 100%;
   min-width: 0;
   display: grid;
@@ -771,20 +1178,100 @@ onBeforeUnmount(() => {
   .proactive-companion[data-platform="mobile"] .pc-stage {
     position: relative;
     z-index: 0;
+    /* 舞台就是「角色可见窗口」：盒子比舞台高（人物因此被放大），
+       超出部分在舞台底边裁掉，而卡片正好压在这条裁切线上。
+       这样角色不会半透明地透出卡面，也不会从卡片下方露腿。 */
+    align-items: start;
+    overflow: hidden;
+    height: clamp(280px, 42dvh, 480px);
+  }
+  /* 建议贴在角色身上说话：悬浮在卡片上缘的一条玻璃建议，不再占页面末尾的位置。
+     bottom 需大于卡片上提量里的名牌区，否则会被卡片扑住。 */
+  .proactive-companion[data-platform="mobile"] .pc-stage-suggestions {
+    position: absolute; inset-inline: 2px; bottom: 60px;
+    display: grid; gap: 8px; z-index: 2;
+    pointer-events: none;
+  }
+  .proactive-companion[data-platform="mobile"] .pc-stage-suggestions .pc-choices {
+    display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px;
+    margin: 0; pointer-events: auto;
+  }
+  .proactive-companion[data-platform="mobile"] .pc-stage-suggestions .pc-choice {
+    position: relative; isolation: isolate;
+    min-height: 0; padding: 8px 14px; border-radius: 16px;
+    flex-direction: row; align-items: center; gap: 10px;
+    /* The glass treatment must not out-specify the Material 3 role colours:
+       keep the tonal background here and layer the sheen on top of it, so a
+       primary suggestion still tracks --md-sys-color-primary-container. */
+    background: var(--pc-card, #171b22);
+    border: 1px solid var(--pc-line, rgba(255,255,255,.10));
+    box-shadow: 0 10px 26px -14px rgba(0,0,0,.5);
+  }
+  .proactive-companion[data-platform="mobile"] .pc-stage-suggestions .pc-choice::before {
+    content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
+    border-radius: inherit; backdrop-filter: blur(14px);
+    background: linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.03));
+  }
+  .proactive-companion[data-design-system="material3"] .pc-stage-suggestions .pc-choice {
+    background: var(--md-sys-color-surface-container);
+    border-color: var(--md-sys-color-outline-variant);
+  }
+  .proactive-companion[data-design-system="material3"] .pc-stage-suggestions .pc-choice--primary {
+    background: var(--md-sys-color-primary-container);
+    border-color: transparent;
+  }
+  .proactive-companion[data-platform="mobile"] .pc-stage-suggestions .pc-choice-label { flex: 0 0 auto; font-size: 14px; line-height: 20px; }
+  .proactive-companion[data-platform="mobile"] .pc-stage-suggestions .pc-choice-reason {
+    flex: 1 1 auto; min-width: 0; margin-top: 0;
+    font-size: 12px; line-height: 18px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .proactive-companion[data-platform="mobile"] .pc-pet-wrap {
-    width: min(400px, 94vw);
-    height: clamp(360px, 64dvh, 600px);
+    /* 角色按画布高度等比缩放到撑满（fitLive2DModelToViewport 只吃高度）：
+       所以这里给得比舞台高，人物就更大；多出来的部分由舞台裁掉。 */
+    width: min(420px, 96vw);
+    height: clamp(440px, 72dvh, 720px);
   }
   /* Pixi sets an inline touch-action:none. Keep vertical page gestures while
    * retaining taps on the character in the larger phone stage. */
   .proactive-companion[data-platform="mobile"] .pc-pet-wrap :deep(canvas) {
     touch-action: pan-y pinch-zoom !important;
   }
+  /* 卡片上提量 = 间隙 + 名牌高度 + 压住裁切线的重叠量（约 16px），
+     让卡片盒子的上缘正好落在舞台裁切线略上方，盖住角色的断口。 */
+  .proactive-companion[data-platform="mobile"] .pc-deck-track {
+    display: flex; gap: 12px;
+    overflow-x: auto; overscroll-behavior-x: contain;
+    scroll-snap-type: x mandatory; scrollbar-width: none;
+    margin-block-start: clamp(-260px, -9dvh, -40px);
+    padding-block-end: 2px;
+    /* 三张卡统一尺寸：切换时不再因为内容多少而跳动，长内容在卡内滚动。 */
+    height: clamp(200px, 31dvh, 270px);
+  }
+  .proactive-companion[data-platform="mobile"] .pc-deck-slide { height: 100%; }
+  /* 卡片是纵向 flex，名牌作为 flex 项会被拉满整行——收成内容宽度的胶囊。 */
+  .proactive-companion[data-platform="mobile"] .pc-deck-slide > .pc-dialogue-name { align-self: flex-start; }
+  .proactive-companion[data-platform="mobile"] .pc-deck-track::-webkit-scrollbar { display: none; }
+  .proactive-companion[data-platform="mobile"] .pc-deck-slide {
+    flex: 0 0 100%; min-width: 0; display: flex; flex-direction: column;
+    scroll-snap-align: center; scroll-snap-stop: always;
+  }
+  .proactive-companion[data-platform="mobile"] .pc-deck-box {
+    flex: 1 1 auto; min-height: 0; overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  /* 卡片高度固定后，长内容在卡内滚动：对话正文滚正文，会话列表滚列表，页脚常驻。 */
+  .proactive-companion[data-platform="mobile"] .pc-deck-slide > .pc-dialogue-box:not(.pc-deck-box) {
+    flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain;
+  }
+  .proactive-companion[data-platform="mobile"] .pc-deck-sessions {
+    flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain;
+  }
+  .proactive-companion[data-platform="mobile"] .pc-deck-dots { display: flex; justify-content: center; gap: 2px; }
   .proactive-companion[data-platform="mobile"] .pc-dialogue {
     position: relative;
     z-index: 1;
-    margin-block-start: clamp(-200px, -22dvh, -120px);
+    margin-block-start: 0;
   }
 }
 .pc-pet-wrap :deep(.aervox-live2d-pet) { min-height: 0; }
@@ -810,14 +1297,28 @@ onBeforeUnmount(() => {
 }
 .pc-dialogue-name::after { content: ""; flex: 0 0 28px; width: 28px; height: 1px; background: var(--pc-line); }
 .pc-dialogue-box {
-  background: var(--pc-card); border: 1px solid var(--pc-line); border-radius: var(--pc-radius);
-  min-width: 0; padding: 18px 18px 16px;
-  box-shadow: 0 1px 2px rgba(23, 24, 26, .04), 0 12px 40px -12px rgba(23, 24, 26, .1);
+  background: var(--pc-card); border: 1px solid var(--pc-line); border-radius: 20px;
+  min-width: 0; padding: 20px 20px 14px;
+  box-shadow: 0 1px 2px rgba(23, 24, 26, .05), 0 18px 48px -18px rgba(23, 24, 26, .16);
 }
 .pc-dialogue-text {
   font-size: 15px; line-height: 1.85; min-height: 56px;
   white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal;
 }
+/* Finished answers render block markdown, so wrapping returns to normal flow. */
+.pc-dialogue-text.markdown-body { white-space: normal; }
+.pc-dialogue-text :deep(p) { margin: 0 0 .7em; }
+.pc-dialogue-text :deep(p:last-child) { margin-bottom: 0; }
+.pc-dialogue-text :deep(ul), .pc-dialogue-text :deep(ol) { margin: .3em 0 .8em; padding-inline-start: 1.3em; }
+.pc-dialogue-text :deep(li) { margin: .2em 0; }
+.pc-dialogue-text :deep(code) { padding: .12em .35em; border-radius: 6px; background: var(--pc-line-soft); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .92em; }
+.pc-dialogue-text :deep(pre) { margin: .6em 0; padding: 12px; border-radius: 12px; background: var(--pc-line-soft); overflow-x: auto; }
+.pc-dialogue-text :deep(pre code) { padding: 0; background: transparent; font-size: .88em; line-height: 1.6; }
+.pc-dialogue-text :deep(h1), .pc-dialogue-text :deep(h2), .pc-dialogue-text :deep(h3) { margin: .8em 0 .4em; font-size: 1.05em; line-height: 1.45; }
+.pc-dialogue-text :deep(blockquote) { margin: .6em 0; padding-inline-start: .8em; border-inline-start: 3px solid var(--pc-line); color: var(--pc-ink-2); }
+.pc-dialogue-text :deep(a) { color: var(--pc-accent); text-decoration: underline; overflow-wrap: anywhere; }
+.pc-dialogue-text :deep(img) { max-width: 100%; height: auto; border-radius: 12px; }
+.pc-dialogue-text :deep(hr) { border: 0; border-top: 1px solid var(--pc-line); margin: 1em 0; }
 .pc-dialogue-waiting {
   display: flex; align-items: center; gap: 10px;
   min-height: 56px; margin-block: 1em;
@@ -839,6 +1340,16 @@ onBeforeUnmount(() => {
   margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--pc-line-soft);
 }
 .pc-dialogue-ctx { min-width: 0; font-size: 11px; color: var(--pc-ink-3); letter-spacing: .04em; overflow-wrap: anywhere; }
+.pc-tool-activity, .pc-copy-feedback {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 11px; border-radius: 999px; letter-spacing: .02em; font-weight: 600;
+  color: var(--md-sys-color-primary, var(--pc-accent));
+  background: color-mix(in srgb, var(--pc-accent) 10%, transparent);
+}
+.pc-copy { flex: 0 0 48px; width: 48px; height: 48px; margin-inline-start: auto; }
+.pc-speak { flex: 0 0 48px; width: 48px; height: 48px; }
+.pc-dictate { flex: 0 0 48px; width: 48px; height: 48px; }
+.pc-mobile-status { flex: 0 0 auto; margin: 8px 16px; padding: 5px 14px; border-radius: 999px; font-size: 13px; line-height: 20px; color: var(--md-sys-color-on-surface-variant, var(--pc-ink-2)); background: var(--md-sys-color-surface-container, rgba(23, 24, 26, .05)); }
 .pc-dialogue-foot button { min-width: 44px; min-height: 44px; }
 .pc-feedback {
   display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px;
@@ -904,9 +1415,9 @@ onBeforeUnmount(() => {
 .pc-whisper--open { justify-content: center; }
 .pc-whisper-input {
   display: flex; width: 100%; max-width: 620px; min-width: 0; align-items: center; gap: 6px;
-  background: var(--pc-card); border: 1px solid var(--pc-line); border-radius: var(--pc-radius);
-  padding: 6px 8px 6px 12px;
-  box-shadow: 0 1px 2px rgba(23, 24, 26, .04), 0 12px 40px -12px rgba(23, 24, 26, .12);
+  background: var(--pc-card); border: 1px solid var(--pc-line); border-radius: 26px;
+  padding: 6px 8px 6px 16px;
+  box-shadow: 0 1px 2px rgba(23, 24, 26, .05), 0 18px 48px -18px rgba(23, 24, 26, .18);
 }
 .pc-whisper-input input {
   flex: 1 1 0%; min-width: 0; width: 0; min-height: 44px;
@@ -969,7 +1480,20 @@ onBeforeUnmount(() => {
 .pc-viewport--short .pc-dialogue,
 .pc-viewport--short .pc-choices,
 .pc-viewport--short .pc-plugin-cards { grid-column: auto; grid-row: auto; }
-.proactive-companion[data-platform="mobile"].pc-viewport--short .pc-dialogue { margin-block-start: 0; }
+.proactive-companion[data-platform="mobile"].pc-viewport--short .pc-dialogue,
+.proactive-companion[data-platform="mobile"].pc-viewport--short .pc-deck-track { margin-block-start: 0; }
+.proactive-companion.pc-viewport--short .pc-whisper-label,
+.pc-viewport--short .pc-whisper-label { display: none; }
+.proactive-companion.pc-viewport--short .pc-whisper-input textarea,
+.proactive-companion.pc-viewport--short .pc-whisper-input input,
+.pc-viewport--short .pc-whisper-input textarea,
+.pc-viewport--short .pc-whisper-input input { grid-row: 1; }
+.proactive-companion.pc-viewport--short .pc-whisper-input,
+.pc-viewport--short .pc-whisper-input { padding: 6px 8px 6px 12px; }
+.proactive-companion.pc-viewport--short .pc-dialogue-box,
+.pc-viewport--short .pc-dialogue-box { padding: 12px 16px; border-radius: 16px; }
+.proactive-companion.pc-viewport--short .pc-dialogue-text,
+.pc-viewport--short .pc-dialogue-text { font-size: 14px; line-height: 22px; }
 @media (max-height: 520px) {
   .pc-stage { display: none; }
   .pc-content {
@@ -977,7 +1501,8 @@ onBeforeUnmount(() => {
     grid-auto-rows: max-content; align-content: start; gap: 12px; padding-block: 8px 12px;
   }
   .pc-dialogue, .pc-choices, .pc-plugin-cards { grid-column: auto; grid-row: auto; }
-  .proactive-companion[data-platform="mobile"] .pc-dialogue { margin-block-start: 0; }
+  .proactive-companion[data-platform="mobile"] .pc-dialogue,
+  .proactive-companion[data-platform="mobile"] .pc-deck-track { margin-block-start: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   .pc-caret, .pc-waiting-dots i { animation: none; }
@@ -1017,9 +1542,14 @@ onBeforeUnmount(() => {
   width: 48px; height: 48px; flex-basis: 48px; border-radius: 50%; padding: 0;
   background: transparent; color: var(--md-sys-color-on-surface-variant);
 }
-.proactive-companion[data-design-system="material3"] .pc-content { gap: 24px; padding-block: 20px 24px; }
-.proactive-companion[data-design-system="material3"] .pc-stage { padding-top: 24px; }
-.proactive-companion[data-design-system="material3"] .pc-pet-status { font-size: 12px; line-height: 16px; font-weight: 500; letter-spacing: .5px; }
+.proactive-companion[data-design-system="material3"] .pc-content { gap: 14px; padding-block: 14px 14px; }
+.proactive-companion[data-design-system="material3"] .pc-stage { padding-top: 0; }
+.proactive-companion[data-design-system="material3"] .pc-pet-status {
+  top: 2px; padding: 2px 10px; border-radius: 999px;
+  background: color-mix(in srgb, var(--pc-bg, #101318) 70%, transparent);
+  backdrop-filter: blur(8px);
+  font-size: 12px; line-height: 16px; font-weight: 500; letter-spacing: .5px;
+}
 .proactive-companion[data-design-system="material3"] .pc-pet-status::before { background: var(--md-sys-color-outline); }
 .proactive-companion[data-design-system="material3"] .pc-dialogue-name { margin: 0 16px 8px; font-size: 14px; line-height: 20px; font-weight: 500; letter-spacing: .1px; }
 .proactive-companion[data-design-system="material3"] .pc-dialogue-name::after { display: none; }
@@ -1049,7 +1579,7 @@ onBeforeUnmount(() => {
 }
 .proactive-companion[data-design-system="material3"] .pc-feedback[data-kind$="error"] { background: var(--md-sys-color-error-container); color: var(--md-sys-color-on-error-container); }
 .proactive-companion[data-design-system="material3"] .pc-feedback-action { min-height: 48px; padding: 0; background: transparent; font-weight: 500; border-radius: 24px; }
-.proactive-companion[data-design-system="material3"] .pc-whisper { gap: 8px; align-items: center; background: var(--md-sys-color-surface); }
+.proactive-companion[data-design-system="material3"] .pc-whisper { gap: 8px; align-items: center; background: transparent; }
 .proactive-companion[data-design-system="material3"] .pc-whisper-pill {
   --md-filled-tonal-button-container-height: 48px;
   flex: 1 1 auto; min-width: 0; min-height: 48px; padding: 0; border: 0; box-shadow: none;
@@ -1062,14 +1592,26 @@ onBeforeUnmount(() => {
   margin: 0; min-height: 48px; border: 0; padding: 0; border-radius: 24px; background: transparent;
 }
 .proactive-companion[data-design-system="material3"] .pc-whisper-input {
-  display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center;
   gap: 0 4px; padding: 8px 8px 8px 16px; background: var(--md-sys-color-surface-container-high);
   border: 0; border-radius: 28px; box-shadow: none;
 }
-.proactive-companion[data-design-system="material3"] .pc-whisper-label { grid-column: 1; grid-row: 1; color: var(--md-sys-color-on-surface-variant); font-size: 12px; line-height: 16px; letter-spacing: .4px; }
-.proactive-companion[data-design-system="material3"] .pc-whisper-input input { grid-column: 1; grid-row: 2; min-height: 32px; width: 100%; font-size: 16px; line-height: 24px; letter-spacing: .2px; }
-.proactive-companion[data-design-system="material3"] .pc-whisper-input > :is(md-filled-button, md-filled-tonal-button) { grid-column: 2; grid-row: 1 / 3; min-width: 64px; --md-filled-button-container-height: 48px; }
-.proactive-companion[data-design-system="material3"] .pc-whisper-close { grid-column: 3; grid-row: 1 / 3; width: 48px; height: 48px; padding: 0 !important; --md-icon-button-icon-size: 24px; }
+/* 输入条只留「一个框 + 发送键」：标签退成可访问名称，不再占视觉行。 */
+.proactive-companion[data-design-system="material3"] .pc-whisper-label {
+  position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0;
+  overflow: hidden; white-space: nowrap; clip-path: inset(50%);
+}
+.proactive-companion[data-design-system="material3"] .pc-whisper-input input { grid-column: 1; grid-row: 1; min-height: 32px; width: 100%; font-size: 16px; line-height: 24px; letter-spacing: .2px; }
+.proactive-companion[data-design-system="material3"] .pc-whisper-input > :is(md-filled-button, md-filled-tonal-button) { grid-column: 2; grid-row: 1; min-width: 64px; --md-filled-button-container-height: 48px; }
+.proactive-companion[data-design-system="material3"] .pc-attachment-chip {
+  grid-column: 1 / -1; grid-row: 2; display: inline-flex; align-items: center; gap: 6px;
+  justify-self: start; max-width: 100%; margin-top: 4px; padding: 4px 6px 4px 12px;
+  border-radius: 999px; font-size: 12px; line-height: 18px;
+  color: var(--md-sys-color-on-surface-variant); background: var(--md-sys-color-surface-container-highest);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pc-attachment-remove { display: grid; place-items: center; flex: 0 0 22px; width: 22px; height: 22px; border: 0; border-radius: 50%; background: transparent; color: inherit; cursor: pointer; }
+.pc-attachment-remove:hover { background: rgba(128, 134, 146, .18); }
 .proactive-companion[data-design-system="material3"] .pc-interaction {
   width: 100%; max-width: 620px; justify-self: center; padding: 20px; border-radius: 24px;
   background: var(--md-sys-color-surface-container-low); color: var(--md-sys-color-on-surface);
@@ -1083,6 +1625,10 @@ onBeforeUnmount(() => {
   .proactive-companion[data-design-system="material3"] .pc-dialogue-box { padding: 16px; }
   .proactive-companion[data-design-system="material3"] .pc-whisper-input { padding-inline-start: 12px; }
   .proactive-companion[data-design-system="material3"] .pc-whisper-input > :is(md-filled-button, md-filled-tonal-button) { min-width: 48px; }
+  /* Tiny multi-window widths wrap the placeholder; cap the growth so the
+   * composer row stays on screen instead of pushing past the viewport. */
+  .proactive-companion[data-design-system="material3"] .pc-whisper-input textarea,
+  .pc-viewport--short .pc-whisper-input textarea { min-height: 24px; max-height: 48px; }
 }
 </style>
 
@@ -1097,11 +1643,101 @@ onBeforeUnmount(() => {
 }
 .pc-mobile-preparing { flex: 0 0 auto; margin: 8px 16px; color: var(--md-sys-color-on-surface-variant); font-size: 14px; line-height: 20px; }
 .pc-current-session { flex: 0 0 auto; margin: -4px 24px 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--md-sys-color-on-surface-variant); font-size: 14px; line-height: 20px; }
-.pc-mobile-actions { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 8px; padding: 0 16px; background: var(--md-sys-color-surface); }
-.pc-mobile-actions > md-text-button { flex: 1; }
-.pc-mobile-actions > md-icon-button { width: 48px; height: 48px; }
+/* 首页卡片堆叠：对话 / 会话 / 工具 三张卡同层叠放，左右滑动切换。
+ * 桌面把轨道设为 contents，保持原有栅格排布不变。 */
+.pc-deck-track { display: contents; }
+.pc-deck-dots { display: none; }
+/* 指示点：命中区 24px，视觉是 6px 圆点，当前页拉长成短横。 */
+.pc-deck-dot {
+  display: grid; place-items: center;
+  width: 24px; height: 24px; padding: 0; border: 0; background: none; cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.pc-deck-dot::before {
+  content: ""; width: 6px; height: 6px; border-radius: 999px;
+  background: var(--md-sys-color-outline);
+  transition: width .18s var(--pc-ease), background-color .18s var(--pc-ease);
+}
+.pc-deck-dot.is-active::before { width: 18px; background: var(--md-sys-color-primary); }
+.pc-deck-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.pc-deck-current { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; font-weight: 600; line-height: 22px; }
+.pc-deck-sessions { list-style: none; display: grid; gap: 6px; margin: 12px 0 0; padding: 0; }
+.pc-deck-session {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%;
+  padding: 10px 12px; border-radius: 14px; border: 1px solid transparent;
+  background: var(--md-sys-color-surface-container-high); color: inherit; font: inherit; font-size: 14px;
+  cursor: pointer; text-align: left;
+}
+.pc-deck-session.is-active { border-color: var(--md-sys-color-primary); }
+.pc-deck-session-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-deck-session-mark { flex: 0 0 auto; font-size: 11px; color: var(--md-sys-color-primary); }
+.pc-deck-empty { margin: 14px 0 0; color: var(--md-sys-color-on-surface-variant); font-size: 13px; line-height: 19px; }
+.pc-deck-foot { display: flex; gap: 4px; margin-top: auto; padding-top: 8px; }
+/* 日记卡：正文在卡内滚动，标题与页脚常驻。 */
+.pc-diary-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain; margin-top: 10px; }
+.pc-diary-text { margin: 0; font-size: 14px; line-height: 24px; color: var(--md-sys-color-on-surface); white-space: pre-wrap; overflow-wrap: anywhere; }
+.pc-diary-list { display: grid; gap: 6px; }
+.pc-deck-hint { margin: 8px 4px 0; font-size: 12px; line-height: 18px; color: var(--md-sys-color-on-surface-variant); }
+.pc-diary-error { color: var(--md-sys-color-error); }
+.pc-deck-tools { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 10px; }
+/* 工具卡内容少，整组垂直居中；否则卡片高度对齐对话卡后底部会空一大块。 */
+.pc-deck-box--tools { justify-content: center; }
+.pc-home-tool {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  min-height: 84px; padding: 12px; font: inherit; font-size: 13px; cursor: pointer;
+  border-radius: 18px; border: 1px solid var(--md-sys-color-outline-variant);
+  background: var(--md-sys-color-surface-container-low); color: var(--md-sys-color-on-surface-variant);
+}
+.pc-home-tool:disabled { opacity: .5; cursor: default; }
+.pc-home-tool:active:not(:disabled) { background: var(--md-sys-color-surface-container-high); }
 .pc-mobile-session-feedback { flex: 0 0 auto; margin: 8px 16px; font-size: 14px; line-height: 20px; color: var(--md-sys-color-error); }
-.proactive-companion[data-design-system="material3"] .pc-whisper-input textarea { grid-column: 1; grid-row: 2; width: 100%; min-width: 0; min-height: 32px; max-height: 120px; border: 0; padding: 0; resize: none; outline: none; background: transparent; color: var(--md-sys-color-on-surface); font: inherit; font-size: 16px; line-height: 24px; overflow-y: auto; }
+.proactive-companion[data-design-system="material3"] .pc-whisper-input textarea { grid-column: 1; grid-row: 1; width: 100%; min-width: 0; min-height: 32px; max-height: 120px; border: 0; padding: 0; resize: none; outline: none; background: transparent; color: var(--md-sys-color-on-surface); font: inherit; font-size: 16px; line-height: 24px; overflow-y: auto; }
 /* Keep feedback, its action and the editable draft available together above an IME. */
 .proactive-companion[data-design-system="material3"].pc-viewport--short.pc-has-feedback .pc-whisper-input textarea { max-height: 32px; }
+
+/* --- 观感精修：气泡 / 输入区 / 卡片 / 底栏 --- */
+.proactive-companion[data-design-system="material3"] .pc-dialogue-box {
+  border-radius: 20px; padding: 18px 20px 14px;
+  /* 玻璃渐变下垫近实底：对话层覆盖角色下半身时文字仍可读，观感不变。 */
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.03)),
+    color-mix(in srgb, var(--pc-card, #171b22) 88%, transparent);
+  backdrop-filter: blur(18px);
+  border: 1px solid var(--pc-line, rgba(255,255,255,.10));
+  box-shadow: 0 12px 32px -18px rgba(0,0,0,.45);
+}
+.proactive-companion[data-design-system="material3"] .pc-dialogue-text { font-size: 15px; line-height: 25px; }
+.proactive-companion[data-design-system="material3"] .pc-whisper-input {
+  border-radius: 999px; padding: 6px 6px 6px 18px;
+  /* 与对话卡同一套「近实底玻璃」：同一层渐变 + 88% 卡片色 + 模糊，
+     这样输入条和卡片看起来是同一种材料，而不是两种灰。 */
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.03)),
+    color-mix(in srgb, var(--pc-card, #171b22) 88%, transparent);
+  backdrop-filter: blur(18px);
+  border: 1px solid var(--pc-line, rgba(255,255,255,.10));
+  box-shadow: 0 12px 32px -18px rgba(0,0,0,.45);
+}
+.proactive-companion[data-design-system="material3"] .pc-whisper-input:focus-within {
+  border-color: var(--pc-accent, #9b7aff);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--pc-accent, #9b7aff) 28%, transparent), 0 10px 28px -12px rgba(0,0,0,.4);
+}
+.proactive-companion[data-design-system="material3"] .pc-whisper-input button {
+  border-radius: 999px; min-width: 44px; padding-inline: 16px;
+}
+.proactive-companion[data-design-system="material3"] .pc-whisper-label { font-size: 11px; letter-spacing: .02em; opacity: .72; }
+.proactive-companion[data-design-system="material3"] .pc-choice {
+  border-radius: 18px; padding: 15px 17px;
+}
+.proactive-companion[data-design-system="material3"] .pc-choice--primary {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--pc-accent, #9b7aff) 26%, transparent), color-mix(in srgb, var(--pc-accent, #9b7aff) 10%, transparent));
+  border-color: color-mix(in srgb, var(--pc-accent, #9b7aff) 42%, transparent);
+}
+.proactive-companion[data-design-system="material3"] .pc-current-session { margin-block-end: 2px; }
+/* 名牌压在角色身上时保持可读：给一层贴近底色的圆角衬底。 */
+.proactive-companion[data-design-system="material3"] .pc-dialogue-name {
+  padding: 3px 10px; border-radius: 999px;
+  background: color-mix(in srgb, var(--pc-bg, #101318) 72%, transparent);
+  backdrop-filter: blur(8px);
+}
 </style>
