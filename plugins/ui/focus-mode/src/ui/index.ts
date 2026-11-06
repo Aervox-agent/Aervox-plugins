@@ -13,6 +13,7 @@ import FocusTaskCenterCard from './FocusTaskCenterCard.vue';
 import FocusSettingsRow from './FocusSettingsRow.vue';
 import FocusModeIndicator from './FocusModeIndicator.vue';
 import LearningDrawer from './LearningDrawer.vue';
+import FocusCompanionLearning from './FocusCompanionLearning.vue';
 import { useFocusModeState, disposeFocusModeState } from './plugin-state';
 import { useFocusLearning, disposeFocusLearning } from './useFocusLearning';
 
@@ -26,6 +27,7 @@ export {
   FocusSettingsRow,
   FocusModeIndicator,
   LearningDrawer,
+  FocusCompanionLearning,
 };
 
 
@@ -36,6 +38,7 @@ export {
  * - 注册术语条与名词解释弹窗至 `conversation:bottom`
  * - 注册主导航学习能力入口至 `nav:menu-items`
  * - 注册专属卡片（学习规划、错题本、刷题模式）至 `registry.registerCard`
+ * - 主动首页通过 `companion:cards` / `companion:drawers` 打开相同学习状态
  * - 注册专注模式消息前缀变换拦截器（支持元数据协议透传）
  */
 export function registerFocusModePlugin(
@@ -101,6 +104,17 @@ export function registerFocusModePlugin(
     priority: 100,
   });
 
+  // Companion hosts render their own slots; opening a view only changes the
+  // same context-owned learning state and never starts a conversation Turn.
+  const unregisterCompanionEntry = registry.registerSlotComponent('companion:cards', FocusCompanionLearning, {
+    id: 'focus-mode:companion-learning',
+    priority: 100,
+  });
+  const unregisterCompanionDrawer = registry.registerSlotComponent('companion:drawers', LearningDrawer, {
+    id: 'focus-mode:companion-learning-drawer',
+    priority: 100,
+  });
+
   // 插件自有设置行：宿主设置面板只提供通用插槽，不内建任何插件行
   const unregisterSettingsRow = registry.registerSlotComponent(
     'settings:conversation-rows',
@@ -141,6 +155,8 @@ export function registerFocusModePlugin(
     unregisterMistakeCard();
     unregisterQuizCard();
     unregisterDrawer();
+    unregisterCompanionEntry();
+    unregisterCompanionDrawer();
     unregisterTaskCard();
     unregisterSettingsRow();
     unregisterComposerIndicator();
@@ -152,6 +168,7 @@ export function registerFocusModePlugin(
 /** 专注模式第一方插件定义 */
 export const focusModePluginDefinition: BuiltinUIPlugin = {
   id: 'ap-ui-focus-mode',
+  surfaces: ['workbench', 'companion'],
   setup(registry, context) {
     return registerFocusModePlugin(registry, context);
   },

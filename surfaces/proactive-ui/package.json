@@ -4,7 +4,7 @@
   "license": "AGPL-3.0-or-later",
   "private": true,
   "type": "module",
-  "description": "Proactive companion UI surface (direction D): visual-novel dialogue box, two proactive suggestion cards, de-emphasized whisper input.",
+  "description": "Companion UI surface: character dialogue, saved sessions, learning and diary navigation, and persistent conversation input.",
   "exports": {
     ".": "./src/index.ts"
   },

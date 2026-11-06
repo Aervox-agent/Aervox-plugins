@@ -16,7 +16,7 @@ export const flowCampusUIPlugin: BuiltinUIPlugin = {
   setup(registry, context, lifecycle) {
     if (!context) throw new Error('flowcampus_ui_context_required');
     const store = useCampusStore(context, lifecycle);
-    const taskCenterCard = defineComponent({ setup: () => () => h(CampusCard, { beforeOpen: () => context.navigation.closeTaskCenter() }) });
+    const taskCenterCard = defineComponent({ setup: () => () => h(CampusCard, { beforeOpen: () => context.navigation.closeTaskCenter?.() }) });
     const cleanups = [
       registry.registerCard({ id: 'ap-tool-flowcampus', label: '只争朝夕', description: '课程、出发时间与可用空档',
         icon: CalendarClock, summary: () => store.plan.value?.nextEvent?.title ?? '添加课程与路线',

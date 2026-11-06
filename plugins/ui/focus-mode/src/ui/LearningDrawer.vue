@@ -67,6 +67,7 @@ const hasActiveMistakes = computed(() => mistakes.value.some((item) => item.stat
     :active-key="activeLearningView"
     nav-aria-label="学习导航"
     custom-class="learning-dialog"
+    :destroy-on-close="false"
     @update:active-key="activeLearningView = $event as any"
     @open="reloadLearning"
   >

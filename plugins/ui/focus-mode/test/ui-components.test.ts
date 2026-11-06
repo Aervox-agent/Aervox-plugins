@@ -8,7 +8,9 @@ import FocusModeSwitch from '../src/ui/FocusModeSwitch.vue';
 import FocusNavMenuItem from '../src/ui/FocusNavMenuItem.vue';
 import FocusStudyCardActions from '../src/ui/FocusStudyCardActions.vue';
 import FocusTaskCenterCard from '../src/ui/FocusTaskCenterCard.vue';
+import FocusCompanionLearning from '../src/ui/FocusCompanionLearning.vue';
 import { useFocusModeState } from '../src/ui/plugin-state';
+import { useFocusLearning } from '../src/ui/useFocusLearning';
 import { openDailyProblem } from '../src/ui/daily-problem';
 
 // CR-060 §B9b：每日一题入口已迁入插件包，组件不再经宿主 cards 调用
@@ -34,6 +36,27 @@ function mountWith(component: unknown, context: UIPluginContext) {
 enableAutoUnmount(afterEach);
 
 describe('plugins/plugins/ui/focus-mode UI 组件', () => {
+    it('opens the companion learning views without sending a Turn or replacing an existing practice draft', async () => {
+      const sendMessage = vi.fn();
+      const context = contextWith({ sendMessage });
+      const state = useFocusModeState(context);
+      const learning = useFocusLearning(context);
+      learning.practiceAnswer.value = '尚未确认的作答';
+      learning.practiceError.value = '结果仍需确认';
+      const entry = mountWith(FocusCompanionLearning, context);
+      const buttons = entry.findAll('button');
+      await buttons.find(button => button.text() === '错题练习')!.trigger('click');
+      expect(state.learningOpen.value).toBe(true);
+      expect(state.activeLearningView.value).toBe('mistake');
+      state.learningOpen.value = false;
+      await buttons.find(button => button.text() === '学习规划')!.trigger('click');
+      expect(state.learningOpen.value).toBe(true);
+      expect(state.activeLearningView.value).toBe('study');
+      expect(useFocusLearning(context)).toBe(learning);
+      expect(learning.practiceAnswer.value).toBe('尚未确认的作答');
+      expect(learning.practiceError.value).toBe('结果仍需确认');
+      expect(sendMessage).not.toHaveBeenCalled();
+    });
     it('shares the mode state between the header switch and settings row', async () => {
       const context = contextWith({ isPluginAvailable: () => true });
       const { focusModeEnabled } = useFocusModeState(context);
