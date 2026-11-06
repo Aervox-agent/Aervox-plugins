@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 env:
-  # Shared history and delayed selection ports are prepared before this collection revision.
-  HOST_COMMIT: ${{ inputs.host_commit || 'c6115be82eca8bda839297efc21cebfc07f87953' }}
+  # Read-only catalog ports, authoritative tool permits and paired root lock are public in this host integration.
+  HOST_COMMIT: ${{ inputs.host_commit || '10a2a46a204cb013579ed123f8906212de1a39aa' }}
 
 jobs:
   integration:
