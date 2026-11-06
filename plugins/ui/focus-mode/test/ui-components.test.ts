@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { enableAutoUnmount, mount } from '@vue/test-utils';
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils';
 import { ref } from 'vue';
 import { UI_PLUGIN_CONTEXT_KEY, type UIPluginContext } from '@aervox/ui/plugin-api';
 import FocusSettingsRow from '../src/ui/FocusSettingsRow.vue';
@@ -186,7 +186,7 @@ describe('plugins/plugins/ui/focus-mode UI 组件', () => {
 
     });
 
-    it('FocusTaskCenterCard.vue renders review tag and triggers navigation on button clicks', async () => {
+    it('FocusTaskCenterCard.vue reads the local review projection and opens its review view', async () => {
 
       const taskCenterOpen = ref(true);
 
@@ -194,7 +194,12 @@ describe('plugins/plugins/ui/focus-mode UI 组件', () => {
 
         navigation: { closeTaskCenter: () => { taskCenterOpen.value = false; } },
 
-        cards: { reviewCount: ref(5) },
+        cards: { reviewCount: ref(99) },
+        learning: {
+          reviewSummary: ref({ dueCount: 5, estimatedMinutes: 10 }),
+          resources: { reviews: { loading: ref(false), loaded: ref(true), error: ref(null) } },
+          loadReviews: vi.fn(async () => undefined),
+        },
 
       } as unknown as UIPluginContext;
 
@@ -204,12 +209,14 @@ describe('plugins/plugins/ui/focus-mode UI 组件', () => {
       activeLearningView.value = 'study';
 
       const wrapper = mountWith(FocusTaskCenterCard, mockContext);
+      await flushPromises();
 
       expect(wrapper.find('.focus-task-center-card').exists()).toBe(true);
 
       expect(wrapper.text()).toContain('间隔复习与错题排期');
 
-      expect(wrapper.text()).toContain('5 个待复习');
+      expect(wrapper.text()).toContain('5 项到期复习');
+      expect(wrapper.text()).not.toContain('99');
 
       const buttons = wrapper.findAll('button');
 
@@ -217,7 +224,7 @@ describe('plugins/plugins/ui/focus-mode UI 组件', () => {
 
       await buttons[0].trigger('click');
 
-      expect(activeLearningView.value).toBe('mistake');
+      expect(activeLearningView.value).toBe('review');
 
       expect(learningOpen.value).toBe(true);
 

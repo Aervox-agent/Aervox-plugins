@@ -11,12 +11,14 @@ import { AervoxNavDialog, AervoxButton, AervoxCard, AervoxSegmentedControl, Aerv
 import { useFocusModeState, learningNavItems } from './plugin-state';
 const { activeLearningView, learningOpen } = useFocusModeState();
 import { useFocusLearning } from './useFocusLearning';
+import ReviewLearningView from './ReviewLearningView.vue';
 
 // CR-060 §B9b：刷题 / 错题 / 学习规划的状态机已自宿主迁入本插件包
 const {
   visibleMistakes,
   selectedMistakeIds,
   practiceBusy,
+  practicePending,
   mistakes,
   startMistakePractice,
   mistakeFilter,
@@ -61,7 +63,7 @@ const hasActiveMistakes = computed(() => mistakes.value.some((item) => item.stat
   <AervoxNavDialog
     v-model="learningOpen"
     title="学习能力"
-    subtitle="AI 学习规划与错题靶向重练"
+    subtitle="知识复习、学习规划与错题重练"
     :icon="BookOpen"
     :items="learningNavItems"
     :active-key="activeLearningView"
@@ -73,7 +75,8 @@ const hasActiveMistakes = computed(() => mistakes.value.some((item) => item.stat
   >
     <template #content>
       <p v-if="apiError" class="drawer-error" role="alert">{{ apiError }}</p>
-      <div v-if="activeLearningView === 'study'" class="learning-detail">
+      <ReviewLearningView v-if="activeLearningView === 'review'" />
+      <div v-else-if="activeLearningView === 'study'" class="learning-detail">
 
           <!-- AI 学习规划生成 -->
           <div class="settings-section">
@@ -160,7 +163,7 @@ const hasActiveMistakes = computed(() => mistakes.value.some((item) => item.stat
               <AervoxButton variant="primary"
                 class="practice-start"
                 type="button"
-                :disabled="practiceBusy || !hasActiveMistakes"
+                :disabled="practiceBusy || practicePending || !hasActiveMistakes"
                 @click="startMistakePractice"
               >
                 <RotateCcw :size="15" />{{ selectedMistakeIds.length ? `重练所选 ${selectedMistakeIds.length} 题` : '重练错题' }}
@@ -209,14 +212,14 @@ const hasActiveMistakes = computed(() => mistakes.value.some((item) => item.stat
               <strong>{{ currentPracticeQuestion.prompt }}</strong>
               <form v-if="!practiceFeedback" @submit.prevent="submitPracticeAnswer">
                 <label class="sr-only" for="practice-answer">你的答案</label>
-                <input class="aervox-field" id="practice-answer" v-model="practiceAnswer" placeholder="输入你的答案" :disabled="practiceBusy" />
-                <AervoxButton variant="primary" type="submit" :disabled="practiceBusy || !practiceAnswer.trim()">提交答案</AervoxButton>
+                <input class="aervox-field" id="practice-answer" v-model="practiceAnswer" placeholder="输入你的答案" :readonly="practicePending" :disabled="practiceBusy" />
+                <AervoxButton variant="primary" type="submit" :disabled="practiceBusy || !practiceAnswer.trim()">{{ practicePending ? '重试原答案' : '提交答案' }}</AervoxButton>
               </form>
               <div v-else class="practice-feedback">
                 <p>{{ practiceFeedback.judgement === 'correct' ? '回答正确。' : practiceFeedback.judgement === 'incorrect' ? '这题暂不正确，已安排后续复习。' : '这题需要进一步确认，暂不计入掌握度。' }}</p>
                 <AervoxButton variant="secondary" type="button" :disabled="practiceBusy" @click="nextPracticeQuestion">{{ practiceIndex + 1 === practiceSession?.items.length ? '查看报告' : '下一题' }}</AervoxButton>
               </div>
-              <AervoxButton variant="ghost" class="practice-end" type="button" :disabled="practiceBusy" @click="() => finishPractice()">提前结束并查看报告</AervoxButton>
+              <AervoxButton variant="ghost" class="practice-end" type="button" :disabled="practiceBusy || practicePending" @click="() => finishPractice()">提前结束并查看报告</AervoxButton>
             </AervoxCard>
 
             <ul class="focus-list mistake-list">
