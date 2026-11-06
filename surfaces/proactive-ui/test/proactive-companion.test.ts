@@ -632,11 +632,12 @@ it('opts into official Material controls only when the mobile composition root p
   expect(desktop.find('md-ripple').exists()).toBe(false);
 });
 
-it('retains native input IME, its persistent label and real submission in the Material surface', async () => {
+it('retains native input IME, its accessible name and real submission without a composer label row', async () => {
   const wrapper = await mountSurface('mobile', true);
   const input = wrapper.get('.pc-whisper-input textarea');
   await input.trigger('focus');
-  expect(wrapper.get('label.pc-whisper-label').attributes('for')).toBe(input.attributes('id'));
+  expect(input.attributes('aria-label')).toMatch(/^悄悄对.+说$/);
+  expect(wrapper.find('.pc-whisper-input label').exists()).toBe(false);
   await input.setValue('学习事务回滚');
   await input.trigger('keydown', { key: 'Enter', isComposing: true });
   expect(streamTurn).not.toHaveBeenCalled();
@@ -709,6 +710,97 @@ it('opens model settings after a definite native refusal and lets the preserved 
   expect(wrapper.find('.pc-model-configuration-notice').exists()).toBe(false);
   expect(wrapper.find('.pc-configure-model').exists()).toBe(false);
   expect(wrapper.find('.pc-feedback').exists()).toBe(false);
+});
+
+it('keeps generic Material recovery in the bubble while retaining the real reply until a retry replaces it', async () => {
+  let context!: UIPluginContext;
+  const plugin: BuiltinUIPlugin = {
+    id: 'recovery-reply-probe', surfaces: ['companion'],
+    setup(_registry, capabilities) { context = capabilities!; },
+  };
+  request.mockImplementation(async (method, path) => {
+    if (path === '/v1/plugins') return { items: [{ id: plugin.id, publisher: 'test', version: '1.0.0', checksum: '', installSource: 'builtin', enabled: 1, availability: 'available', createdAt: '', updatedAt: '' }] };
+    return requestImplementation(method, path);
+  });
+  configureAervoxClient({ sessionId: recentSession.id, platform: {}, transport: {
+    request: request as never, streamTurn: streamTurn as never, observeTurn: observeTurn as never,
+    submitQuestionAnswers: vi.fn(), decideToolApproval: vi.fn(), speakText: vi.fn(),
+  } });
+  const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, [plugin]);
+  await sendFromInput(wrapper, '第一条成功的消息'); await flushPromises();
+  const previousReply = context.conversation.latestAssistantText.value;
+  expect(previousReply).toBe('我们接着昨天的进度。');
+  streamTurn.mockRejectedValueOnce(new TypeError('receipt lost'));
+  await sendFromInput(wrapper, '需要恢复的消息'); await flushPromises();
+  const bubble = wrapper.get('.pc-dialogue .pc-dialogue-box');
+  expect(bubble.get('.pc-feedback').text()).toContain('未能收到回复');
+  expect(bubble.get('.pc-retry').text()).toBe('重试发送');
+  expect(wrapper.find('.pc-mobile-feedback').exists()).toBe(false);
+  expect(wrapper.find('.pc-dialogue-text').exists()).toBe(false);
+  expect(wrapper.find('.pc-dialogue-foot').exists()).toBe(false);
+  expect(wrapper.find('.pc-copy').exists()).toBe(false);
+  expect(wrapper.find('.pc-speak').exists()).toBe(false);
+  expect(context.conversation.latestAssistantText.value).toBe(previousReply);
+  expect(wrapper.get('.pc-whisper-input textarea').element.value).toBe('需要恢复的消息');
+  const firstKey = streamTurn.mock.calls[1]![3]!.idempotencyKey;
+  streamTurn.mockImplementationOnce(async (_id, _text, callbacks, options) => {
+    await options!.onAccepted!('turn_recovered'); callbacks.onDelta('恢复后的真实回复'); callbacks.onDone();
+  });
+  await bubble.get('.pc-retry').trigger('click'); await flushPromises();
+  expect(streamTurn.mock.calls[2]![3]!.idempotencyKey).toBe(firstKey);
+  expect(context.conversation.latestAssistantText.value).toBe('恢复后的真实回复');
+  expect(wrapper.get('.pc-dialogue-text').text()).toBe('恢复后的真实回复');
+  expect(wrapper.find('.pc-feedback').exists()).toBe(false);
+  expect(wrapper.find('.pc-copy').exists()).toBe(true);
+  expect(wrapper.find('.pc-speak').exists()).toBe(true);
+});
+
+it('dismisses a plugin failure notice for real chat and preserves tool-card recovery across another refresh failure', async () => {
+  let pluginsAvailable = false;
+  let context!: UIPluginContext;
+  const setup = vi.fn((_registry: unknown, capabilities?: UIPluginContext) => { context = capabilities!; });
+  const plugin: BuiltinUIPlugin = { id: 'plugin-recovery-probe', surfaces: ['companion'], setup };
+  request.mockImplementation(async (method, path) => {
+    if (path === '/v1/plugins') {
+      if (!pluginsAvailable) throw new TypeError('plugin list unavailable');
+      return { items: [{ id: plugin.id, publisher: 'test', version: '1.0.0', checksum: '', installSource: 'builtin', enabled: 1, availability: 'available', createdAt: '', updatedAt: '' }] };
+    }
+    return requestImplementation(method, path);
+  });
+  const writeText = vi.fn(async () => {});
+  const speakText = vi.fn(async () => {});
+  vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+  configureAervoxClient({ sessionId: recentSession.id, platform: {}, transport: {
+    request: request as never, streamTurn: streamTurn as never, observeTurn: observeTurn as never,
+    submitQuestionAnswers: vi.fn(), decideToolApproval: vi.fn(), speakText,
+  } });
+  const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, [plugin]);
+  expect(wrapper.get('.pc-dialogue-box .pc-feedback').text()).toContain('扩展加载失败');
+  expect(setup).not.toHaveBeenCalled();
+  await sendFromInput(wrapper, '扩展加载失败时仍然聊天'); await flushPromises();
+  expect(streamTurn).toHaveBeenCalledOnce();
+  expect(wrapper.find('.pc-dialogue-box .pc-feedback').exists()).toBe(false);
+  expect(wrapper.get('.pc-dialogue-text').text()).toBe('我们接着昨天的进度。');
+  await wrapper.get('.pc-copy').trigger('click'); await wrapper.get('.pc-speak').trigger('click'); await flushPromises();
+  expect(writeText).toHaveBeenCalledWith('我们接着昨天的进度。');
+  expect(speakText).toHaveBeenCalledWith({ text: '我们接着昨天的进度。' });
+  const tools = wrapper.get('[aria-label="工具"]');
+  expect(tools.get('.pc-deck-plugin-error').text()).toContain('扩展加载失败');
+  expect(wrapper.find('.proactive-companion > .pc-mobile-session-feedback').exists()).toBe(false);
+  pluginsAvailable = true;
+  await tools.get('.pc-plugin-retry').trigger('click'); await flushPromises();
+  expect(setup).toHaveBeenCalledOnce();
+  expect(tools.find('.pc-deck-plugin-error').exists()).toBe(false);
+  expect(wrapper.find('.pc-feedback').exists()).toBe(false);
+  expect(context.conversation.latestAssistantText.value).toBe('我们接着昨天的进度。');
+  pluginsAvailable = false;
+  await expect(context.refreshPluginUI()).rejects.toThrow('PLUGIN_LIST_UNAVAILABLE'); await flushPromises();
+  expect(wrapper.get('.pc-dialogue-box .pc-feedback').text()).toContain('扩展加载失败');
+  expect(context.conversation.latestAssistantText.value).toBe('我们接着昨天的进度。');
+  await sendFromInput(wrapper, '再次加载失败后继续聊天'); await flushPromises();
+  expect(wrapper.find('.pc-feedback').exists()).toBe(false);
+  expect(wrapper.get('.pc-dialogue-text').text()).toBe('我们接着昨天的进度。');
+  expect(tools.get('.pc-plugin-retry').text()).toBe('重试加载');
 });
 
 it('preserves the actual latest reply and input focus while a native configuration notice occupies its bubble', async () => {
@@ -857,6 +949,24 @@ it('renames a mobile session only after the host acknowledges the new title', as
   expect(dialog.props('notice')).toContain('已改名为「改过的名字」');
   expect(dialog.props('manageError')).toBeNull();
   expect(streamTurn).not.toHaveBeenCalled();
+});
+
+it('shows the next real reply after a local session rename notice', async () => {
+  const second = { ...recentSession, id: 'second', title: '另一段对话' };
+  request.mockImplementation(async (method, path) => {
+    if (method === 'GET' && path.split('?')[0] === '/v1/sessions') return { items: [recentSession, second] };
+    if (method === 'PATCH' && path === '/v1/sessions/second') return { ...second, title: '改过的名字' };
+    return requestImplementation(method, path);
+  });
+  const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
+  const dialog = wrapper.getComponent(MobileSessionsDialog);
+  dialog.vm.$emit('rename', 'second', '改过的名字'); await flushPromises();
+  expect(wrapper.get('.pc-dialogue-box .pc-feedback').text()).toContain('已改名为「改过的名字」');
+  await sendFromInput(wrapper, '改名后继续对话'); await flushPromises();
+  expect(streamTurn).toHaveBeenCalledOnce();
+  expect(wrapper.find('.pc-feedback').exists()).toBe(false);
+  expect(wrapper.get('.pc-dialogue-text').text()).toBe('我们接着昨天的进度。');
+  expect(wrapper.find('.pc-copy').exists()).toBe(true);
 });
 
 it('keeps the old mobile session title when the rename is rejected', async () => {
@@ -1738,12 +1848,46 @@ it('fills the draft from the host speech input', async () => {
     submitQuestionAnswers: vi.fn(), decideToolApproval: vi.fn(), speechInput,
   } });
   const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
+  await wrapper.get('#pc-material-whisper').setValue('先记下');
   const mic = wrapper.get('[aria-label="语音输入"]');
+  expect(mic.element.tagName).toBe('MD-ICON-BUTTON');
+  expect(mic.element.closest('.pc-whisper-input')).toBe(wrapper.get('.pc-whisper-input').element);
+  expect(mic.element.nextElementSibling).toBe(wrapper.get('.pc-whisper-input md-filled-button').element);
+  expect(wrapper.find('[aria-label="工具"] [aria-label="语音输入"]').exists()).toBe(false);
   await mic.trigger('click');
   await flushPromises();
   expect(speechInput).toHaveBeenCalledTimes(1);
-  expect(wrapper.get('#pc-material-whisper').element.value).toContain('今天天气不错');
+  expect(wrapper.get('#pc-material-whisper').element.value).toBe('先记下 今天天气不错');
   expect(wrapper.get('.pc-mobile-status').text()).toBe('已识别，可继续编辑或发送。');
+  expect(wrapper.get('.pc-mobile-status').element.closest('.pc-dialogue-box')).toBe(wrapper.get('.pc-dialogue .pc-dialogue-box').element);
+  expect(wrapper.find('.pc-mobile-feedback').exists()).toBe(false);
+  expect(streamTurn).not.toHaveBeenCalled();
+  await wrapper.get('.pc-whisper-input md-filled-button').trigger('click'); await flushPromises();
+  expect(streamTurn).toHaveBeenCalledOnce();
+  expect(wrapper.find('.pc-mobile-status').exists()).toBe(false);
+  expect(wrapper.get('.pc-dialogue-text').text()).toBe('我们接着昨天的进度。');
+});
+
+it('keeps a pending inline recognition bounded and retains the draft after no speech', async () => {
+  let rejectRecognition!: (error: Error) => void;
+  const speechInput = vi.fn(() => new Promise<{ text: string }>((_resolve, reject) => { rejectRecognition = reject; }));
+  configureAervoxClient({ sessionId: recentSession.id, platform: {}, transport: {
+    request: request as never, streamTurn: streamTurn as never, observeTurn: observeTurn as never,
+    submitQuestionAnswers: vi.fn(), decideToolApproval: vi.fn(), speechInput,
+  } });
+  const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
+  await wrapper.get('#pc-material-whisper').setValue('已经写好的草稿');
+  await wrapper.get('.pc-dictate').trigger('click'); await flushPromises();
+  expect(wrapper.get('.pc-dictate').attributes('aria-label')).toBe('正在聆听');
+  expect(wrapper.get('.pc-dictate').attributes('disabled')).toBe('true');
+  await wrapper.get('.pc-dictate').trigger('click');
+  expect(speechInput).toHaveBeenCalledOnce();
+  rejectRecognition(new Error('NO_SPEECH')); await flushPromises();
+  expect(wrapper.get('#pc-material-whisper').element.value).toBe('已经写好的草稿');
+  expect(wrapper.get('.pc-dialogue-box .pc-mobile-status').text()).toBe('没有听到内容，请再试一次。');
+  expect(wrapper.get('.pc-dictate').attributes('aria-label')).toBe('语音输入');
+  expect(wrapper.get('.pc-dictate').attributes('disabled')).not.toBe('true');
+  expect(streamTurn).not.toHaveBeenCalled();
 });
 
 it('attaches a picked text file to the next message and clears it after sending', async () => {
@@ -1757,6 +1901,13 @@ it('attaches a picked text file to the next message and clears it after sending'
   await flushPromises();
   expect(pickTextFile).toHaveBeenCalledTimes(1);
   expect(wrapper.get('.pc-attachment-chip').text()).toContain('notes.md');
+  expect(wrapper.get('.pc-attachment-chip').element.closest('[aria-label="工具"]')).not.toBeNull();
+  expect(wrapper.find('.pc-whisper-input .pc-attachment-chip').exists()).toBe(false);
+  await wrapper.get('.pc-attachment-remove').trigger('click'); await flushPromises();
+  expect(wrapper.find('.pc-attachment-chip').exists()).toBe(false);
+  expect(localStorage.getItem('aervox-mobile-draft:attachment-ses_recent')).toBeNull();
+  await wrapper.get('[aria-label="添加文本附件"]').trigger('click'); await flushPromises();
+  expect(pickTextFile).toHaveBeenCalledTimes(2);
   await wrapper.get('#pc-material-whisper').setValue('帮我总结');
   await wrapper.get('.pc-whisper-input md-filled-button').trigger('click');
   await flushPromises();
