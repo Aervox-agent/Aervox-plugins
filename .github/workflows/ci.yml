@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 env:
-  # Validate companion home against its paired, public host integration commit.
-  HOST_COMMIT: ${{ inputs.host_commit || 'e0b1154c01ef373e21e4c5b668265c5cb9991d5c' }}
+  # Validate the unified native UI and avatars against their public host integration commit.
+  HOST_COMMIT: ${{ inputs.host_commit || '521f85e46b1a1ed3865b7bcec5a6ab1453893cee' }}
 
 jobs:
   integration:
