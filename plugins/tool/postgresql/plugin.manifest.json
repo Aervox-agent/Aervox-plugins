@@ -17,5 +17,5 @@
     "installation": "optional",
     "breaking": false
   },
-  "spec": {}
+  "spec": { "skill": "SKILL.md" }
 }
