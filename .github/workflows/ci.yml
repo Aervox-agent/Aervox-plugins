@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 env:
-  # Validate companion home against its paired, public host integration commit.
-  HOST_COMMIT: ${{ inputs.host_commit || '30147c568a4c88b8d2bfc5b18965ff56232c9f43' }}
+  # This public integration includes the reviewed companion home, read-only catalogs, authoritative permits and paired root lock.
+  HOST_COMMIT: ${{ inputs.host_commit || '529fac9c81c0ba63ba69278540496a556f143ee3' }}
 
 jobs:
   integration:
