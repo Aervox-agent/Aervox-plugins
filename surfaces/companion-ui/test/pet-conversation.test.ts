@@ -47,7 +47,7 @@ it('restores observation at its cursor and appends to the visible partial reply'
 it('submits all questions and preserves a newer prompt while the old answer is in flight', async () => {
   let forward!: TurnCallbacks;
   streamTurn.mockImplementation(async (_s,_c,cb,options)=>{
-    forward=cb;await options.onAccepted('turn');cb.onUserQuestion({turnId:'turn',step:1,questions:[
+    forward=cb;await options.onAccepted('turn');cb.onUserQuestion({turnId:'turn',attemptId:'attempt',invocationId:'attempt:1:1',identityStatus:'available',step:1,questions:[
       {id:'q',question:'选主题',multiSelect:true,options:[{label:'A'},{label:'B'}]},
       {id:'details',question:'补充要求'},
     ]});cb.onDone();
@@ -58,11 +58,11 @@ it('submits all questions and preserves a newer prompt while the old answer is i
   await wrapper.findAll('.uq-option-btn')[0]!.trigger('click');await wrapper.findAll('.uq-option-btn')[1]!.trigger('click');
   await wrapper.findAll('.uq-custom-input input')[1]!.setValue('带示例');
   await wrapper.get('.uq-submit-btn').trigger('click');
-  forward.onUserQuestion!({turnId:'turn',step:2,questions:[{id:'next',question:'继续确认'}]});
+  forward.onUserQuestion!({turnId:'turn',attemptId:'attempt',invocationId:'attempt:2:1',identityStatus:'available',step:2,questions:[{id:'next',question:'继续确认'}]});
   answerSaved();await flushPromises();
   expect(submitQuestionAnswers).toHaveBeenCalledWith('turn',[
     {id:'q',selected:['A','B'],custom:undefined},{id:'details',selected:[],custom:'带示例'},
-  ],expect.any(AbortSignal));
+  ],expect.any(AbortSignal),{attemptId:'attempt',invocationId:'attempt:1:1',step:1});
   expect(wrapper.get('.pet-question').text()).toContain('继续确认');
   expect(wrapper.get('.pet-question').text()).not.toContain('选主题');
 });
