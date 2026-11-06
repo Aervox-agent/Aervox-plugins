@@ -4,7 +4,7 @@ import { UISurfaceHost } from '@aervox/ui-host';
 import { AervoxHttpError, configureAervoxClient, setSessionId, type StreamTurnOptions, type TurnCallbacks } from '@aervox/api-client';
 import definition from '../src';
 import { material3ContextKey } from '@aervox/ui/material3';
-import { defineComponent, h, ref, onBeforeUnmount, type Component } from 'vue';
+import { defineComponent, h, markRaw, ref, onBeforeUnmount, type Component } from 'vue';
 import { AervoxDialog } from '@aervox/ui/primitives';
 import { useUIPluginContext, type BuiltinUIPlugin, type UIPluginContext } from '@aervox/ui/plugin-api';
 import MobileSettingsDialog from '../src/MobileSettingsDialog.vue';
@@ -671,13 +671,23 @@ it('opens model settings after a definite native refusal and lets the preserved 
   });
   const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
   const input = wrapper.get('.pc-whisper-input textarea');
+  await wrapper.get('.pc-deck-dot[aria-label="切换到工具"]').trigger('click');
+  expect(wrapper.get('.pc-deck-dot[aria-label="切换到工具"]').attributes('aria-selected')).toBe('true');
   await input.setValue('尚未配置时的草稿');
   await wrapper.get('.pc-whisper-input md-filled-button').trigger('click'); await flushPromises();
   const firstKey = streamTurn.mock.calls[0]![3].idempotencyKey;
-  expect(wrapper.get('.pc-feedback').text()).toContain('请先配置模型服务。消息尚未发送，草稿已保留。');
-  expect(wrapper.findAll('.pc-feedback')).toHaveLength(1);
-  expect(wrapper.get('.pc-mobile-feedback .pc-configure-model').exists()).toBe(true);
-  expect(wrapper.get('.pc-feedback').element.closest('.pc-content')).toBeNull();
+  const bubble = wrapper.get('.pc-dialogue .pc-dialogue-box');
+  const notice = bubble.get('.pc-model-configuration-notice');
+  expect(notice.text()).toBe('请先配置模型服务。消息尚未发送，草稿已保留。');
+  expect(notice.element.tagName).toBe('P');
+  expect(notice.attributes('role')).toBe('status');
+  expect(wrapper.findAll('.pc-model-configuration-notice')).toHaveLength(1);
+  expect(bubble.get('.pc-configure-model').element.closest('.pc-dialogue-box')).toBe(bubble.element);
+  expect(wrapper.find('.pc-feedback').exists()).toBe(false);
+  expect(wrapper.find('.pc-mobile-feedback .pc-configure-model').exists()).toBe(false);
+  expect(wrapper.get('.pc-deck-dot[aria-label="切换到对话"]').attributes('aria-selected')).toBe('true');
+  expect(wrapper.get('.pc-dialogue-ctx').text()).toBe('模型配置提示');
+  expect(wrapper.get('.proactive-companion').classes()).not.toContain('pc-has-feedback');
   expect(wrapper.text()).not.toContain('private native diagnostic');
   expect(wrapper.find('.pc-retry').exists()).toBe(false);
   expect(wrapper.getComponent(MobileSessionsDialog).props('switchLocked')).toBe(false);
@@ -696,7 +706,120 @@ it('opens model settings after a definite native refusal and lets the preserved 
   expect(streamTurn.mock.calls[1]![3].idempotencyKey).not.toBe(firstKey);
   expect(wrapper.get('.pc-dialogue-text').text()).toContain('配置后可以继续对话');
   expect((input.element as HTMLTextAreaElement).value).toBe('');
+  expect(wrapper.find('.pc-model-configuration-notice').exists()).toBe(false);
+  expect(wrapper.find('.pc-configure-model').exists()).toBe(false);
   expect(wrapper.find('.pc-feedback').exists()).toBe(false);
+});
+
+it('preserves the actual latest reply and input focus while a native configuration notice occupies its bubble', async () => {
+  let context!: UIPluginContext;
+  const plugin: BuiltinUIPlugin = {
+    id: 'reply-probe', surfaces: ['companion'],
+    setup(_registry, capabilities) { context = capabilities!; },
+  };
+  request.mockImplementation(async (method, path) => {
+    if (path === '/v1/plugins') return { items: [{ id: plugin.id, publisher: 'test', version: '1.0.0', checksum: '', installSource: 'builtin', enabled: 1, availability: 'available', createdAt: '', updatedAt: '' }] };
+    return requestImplementation(method, path);
+  });
+  const speakText = vi.fn(async () => {});
+  const writeText = vi.fn(async () => {});
+  vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+  configureAervoxClient({ sessionId: recentSession.id, platform: {}, transport: {
+    request: request as never, streamTurn: streamTurn as never, observeTurn: observeTurn as never,
+    submitQuestionAnswers: vi.fn(), decideToolApproval: vi.fn(), speakText,
+  } });
+  const wrapper = mount(UISurfaceHost, {
+    attachTo: document.body,
+    props: { plugin: definition, surface: 'main', platform: 'mobile', viewProps: { nativeRuntime: true, plugins: [plugin] } },
+    global: { provide: { [material3ContextKey as symbol]: true } },
+  });
+  await vi.waitFor(() => expect(context).toBeDefined(), { timeout: 5000 });
+  await flushPromises();
+  await sendFromInput(wrapper, '第一条已配置的消息'); await flushPromises();
+  const previousReply = wrapper.get('.pc-dialogue-text').text();
+  expect(previousReply).toBe('我们接着昨天的进度。');
+  expect(context.conversation.latestAssistantText.value).toBe(previousReply);
+  expect(wrapper.find('.pc-copy').exists()).toBe(true);
+  expect(wrapper.find('.pc-speak').exists()).toBe(true);
+
+  streamTurn.mockRejectedValueOnce(new AervoxHttpError(422, 'native', { code: 'MODEL_NOT_CONFIGURED' }));
+  const input = wrapper.get('.pc-whisper-input textarea');
+  await input.setValue('配置已清除时的草稿');
+  (input.element as HTMLTextAreaElement).focus();
+  expect(document.activeElement).toBe(input.element);
+  await input.trigger('keydown', { key: 'Enter', ctrlKey: true }); await flushPromises();
+  expect(document.activeElement).toBe(input.element);
+  expect(wrapper.get('.pc-dialogue-box .pc-model-configuration-notice').text()).toContain('请先配置模型服务');
+  expect(wrapper.find('.pc-dialogue-text:not(.pc-model-configuration-notice)').exists()).toBe(false);
+  expect(context.conversation.latestAssistantText.value).toBe(previousReply);
+  expect(context.conversation.streaming.value).toBe(false);
+  expect(wrapper.find('.pc-copy').exists()).toBe(false);
+  expect(wrapper.find('.pc-speak').exists()).toBe(false);
+  expect(writeText).not.toHaveBeenCalled();
+  expect(speakText).not.toHaveBeenCalled();
+  expect((input.element as HTMLTextAreaElement).value).toBe('配置已清除时的草稿');
+
+  await wrapper.get('.pc-configure-model').trigger('click'); await flushPromises();
+  expect(wrapper.find('.pc-model-configuration-notice').exists()).toBe(false);
+  expect(context.conversation.latestAssistantText.value).toBe(previousReply);
+  wrapper.getComponent(MobileSettingsDialog).vm.$emit('update:modelValue', false); await flushPromises();
+  expect(wrapper.get('.pc-dialogue-text').text()).toBe(previousReply);
+  expect(wrapper.find('.pc-copy').exists()).toBe(true);
+  expect(wrapper.find('.pc-speak').exists()).toBe(true);
+  expect(streamTurn).toHaveBeenCalledTimes(2);
+
+  streamTurn.mockImplementationOnce(async (_id, _text, callbacks: TurnCallbacks, options: StreamTurnOptions) => {
+    await options.onAccepted?.('restored_model_turn');
+    callbacks.onDelta('模型连接恢复后的真实回复。'); callbacks.onDone();
+  });
+  await input.setValue('配置完成后的下一次尝试');
+  await input.trigger('keydown', { key: 'Enter', ctrlKey: true }); await flushPromises();
+  expect(wrapper.find('.pc-model-configuration-notice').exists()).toBe(false);
+  expect(wrapper.get('.pc-dialogue-text').text()).toBe('模型连接恢复后的真实回复。');
+  expect(context.conversation.latestAssistantText.value).toBe('模型连接恢复后的真实回复。');
+  expect(wrapper.find('.pc-copy').exists()).toBe(true);
+  expect(wrapper.find('.pc-speak').exists()).toBe(true);
+  expect(wrapper.find('.pc-feedback').exists()).toBe(false);
+  expect(streamTurn).toHaveBeenCalledTimes(3);
+  expect((input.element as HTMLTextAreaElement).value).toBe('');
+});
+
+it('opens model settings from its notice after visiting another category and preserves that category draft', async () => {
+  let roleMounts = 0;
+  const RolePanel = markRaw(defineComponent({
+    setup() { roleMounts++; return { draft: ref('') }; },
+    template: '<label>角色称呼<input class="role-settings-draft" v-model="draft" /></label>',
+  }));
+  const ModelPanel = markRaw(defineComponent({ template: '<p>模型服务设置</p>' }));
+  setSessionId(recentSession.id);
+  const wrapper = mount(UISurfaceHost, {
+    props: { plugin: definition, surface: 'main', platform: 'mobile', viewProps: { nativeRuntime: true, settingsPanels: [
+      { category: 'model', component: ModelPanel }, { category: 'persona', component: RolePanel },
+    ] } },
+    global: { provide: { [material3ContextKey as symbol]: true },
+      stubs: { AervoxDialog: { template: '<section><header><slot name="header" /></header><slot /></section>' } } },
+  });
+  await vi.waitFor(() => expect(wrapper.find('.proactive-companion').exists()).toBe(true), { timeout: 5000 });
+  await flushPromises();
+  await wrapper.get('[aria-label="打开设置"]').trigger('click');
+  const settings = wrapper.getComponent(MobileSettingsDialog);
+  await settings.get('#mobile-settings-tab-persona').trigger('click');
+  const originalRoleInput = settings.get('.role-settings-draft').element;
+  await settings.get('.role-settings-draft').setValue('尚未保存的角色称呼');
+  settings.vm.$emit('update:modelValue', false); await flushPromises();
+  expect(settings.props('modelValue')).toBe(false);
+
+  streamTurn.mockRejectedValueOnce(new AervoxHttpError(422, 'native', { code: 'MODEL_NOT_CONFIGURED' }));
+  await sendFromInput(wrapper, '请先提示配置'); await flushPromises();
+  await wrapper.get('.pc-dialogue-box .pc-configure-model').trigger('click'); await flushPromises();
+  expect(settings.props('modelValue')).toBe(true);
+  expect(settings.get('[role="tabpanel"]').attributes('id')).toBe('mobile-settings-panel-model');
+  expect(settings.getComponent(ModelPanel).exists()).toBe(true);
+
+  await settings.get('#mobile-settings-tab-persona').trigger('click');
+  expect(settings.get('.role-settings-draft').element).toBe(originalRoleInput);
+  expect((settings.get('.role-settings-draft').element as HTMLInputElement).value).toBe('尚未保存的角色称呼');
+  expect(roleMounts).toBe(1);
 });
 
 it('keeps mobile session switching and creation available after missing model configuration', async () => {
@@ -936,6 +1059,7 @@ it('does not reinterpret a later native configuration refusal as proof that an e
   expect(streamTurn.mock.calls[1]![3].idempotencyKey).toBe(streamTurn.mock.calls[0]![3].idempotencyKey);
   expect(wrapper.getComponent(MobileSessionsDialog).props('switchLocked')).toBe(true);
   expect(wrapper.find('.pc-configure-model').exists()).toBe(false);
+  expect(wrapper.find('.pc-model-configuration-notice').exists()).toBe(false);
   expect(wrapper.get('.pc-feedback').text()).not.toContain('消息尚未发送');
   expect(wrapper.find('.pc-retry').exists()).toBe(true);
 });

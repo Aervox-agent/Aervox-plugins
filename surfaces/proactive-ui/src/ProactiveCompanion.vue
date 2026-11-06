@@ -35,6 +35,7 @@ const props = withDefaults(defineProps<{
   draftStorage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 }>(), { settingsPanels: () => [], plugins: () => [] });
 const settingsOpen = ref(false);
+const settingsDialog = ref<InstanceType<typeof MobileSettingsDialog>>();
 const todayOpen = ref(false);
 const learningOpen = ref(false);
 const diaryOpen = ref(false);
@@ -84,10 +85,10 @@ function onDeckScroll() {
   if (!track || !track.clientWidth) return;
   deckIndex.value = Math.min(Math.max(Math.round(track.scrollLeft / track.clientWidth), 0), deckSize.value - 1);
 }
-function goDeck(index: number) {
+function goDeck(index: number, behavior: ScrollBehavior = 'smooth') {
   const track = deckTrack.value;
   if (!track) return;
-  if (typeof track.scrollTo === 'function') track.scrollTo({ left: index * track.clientWidth, behavior: 'smooth' });
+  if (typeof track.scrollTo === 'function') track.scrollTo({ left: index * track.clientWidth, behavior });
   else track.scrollLeft = index * track.clientWidth;
   deckIndex.value = index;
 }
@@ -281,6 +282,14 @@ const DEVICE_TOOL_LABELS: Record<string, string> = {
   device_text: '正在输入文字…', device_launch_app: '正在打开应用…', device_info: '正在读取设备信息…',
 };
 const turnFeedback = ref<{ kind: 'connection-error' | 'observer-error' | 'turn-error' | 'cancel-error' | 'stopped' | 'completed'; message: string; action?: 'configure-model' }>();
+// Local admission feedback belongs in the dialogue surface, while the last
+// actual assistant text remains available to plugins and after dismissal.
+const modelConfigurationNotice = computed(() => turnFeedback.value?.action === 'configure-model' ? turnFeedback.value.message : undefined);
+const dialogueBox = ref<HTMLElement>();
+function openModelConfiguration() {
+  settingsDialog.value?.selectCategory('model');
+  settingsOpen.value = true;
+}
 interface FailedTurn {
   content: string;
   source: 'suggestion' | 'whisper';
@@ -321,7 +330,10 @@ const pluginContext: UIPluginContext = Object.freeze({
 });
 provideUIPluginContext(pluginContext);
 pluginRuntime = createWorkbenchPluginRuntime(registry, () => pluginContext, props.plugins, { surfaceKind: 'companion' });
-watch(settingsOpen, (open, previous) => { if (previous && !open) void refreshPluginUI().catch(() => undefined); });
+watch(settingsOpen, (open, previous) => {
+  if (open && modelConfigurationNotice.value) turnFeedback.value = undefined;
+  if (previous && !open) void refreshPluginUI().catch(() => undefined);
+});
 const interactionBusy = ref(false);
 let stopPreparing = false;
 let hasTurnReply = false;
@@ -460,6 +472,12 @@ async function sendTurn(content: string, source: 'suggestion' | 'whisper' = 'sug
         failedTurn.value = undefined;
         turnFeedback.value = {kind: 'connection-error', message: '请先配置模型服务。消息尚未发送，草稿已保留。', action: 'configure-model'};
         dialogueCtx.value = previousContext;
+        if (material3) goDeck(0, 'auto');
+        void nextTick(() => {
+          if (surface.signal.aborted || !modelConfigurationNotice.value) return;
+          if (dialogueBox.value) dialogueBox.value.scrollTop = 0;
+          dialogueBox.value?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+        });
       } else if (observationFailed()) {
         turnFeedback.value = {kind: 'observer-error', message: '连接中断，已保留收到的回复。可恢复接收。'};
       } else {
@@ -891,7 +909,7 @@ onBeforeUnmount(() => {
     ref="mobileScreen"
     :tabindex="material3 ? -1 : undefined"
     class="proactive-companion"
-    :class="{ 'pc-viewport--short': viewportHeight !== undefined && viewportHeight < 500, 'pc-has-feedback': material3 && !!turnFeedback }"
+    :class="{ 'pc-viewport--short': viewportHeight !== undefined && viewportHeight < 500, 'pc-has-feedback': material3 && !!turnFeedback && !modelConfigurationNotice }"
     :data-platform="surface.platform"
     :data-design-system="material3 ? 'material3' : undefined"
     :style="{ '--pc-viewport-height': viewportHeight === undefined ? undefined : `${viewportHeight}px`, '--pc-viewport-top': `${viewportTop}px` }"
@@ -918,8 +936,9 @@ onBeforeUnmount(() => {
     <div class="pc-deck-track" ref="deckTrack" @scroll.passive="onDeckScroll">
     <section class="pc-dialogue pc-deck-slide" aria-label="陪伴对话">
       <div class="pc-dialogue-name">{{ companionName }}</div>
-      <div class="pc-dialogue-box">
-        <p v-if="waitingForReply" class="pc-dialogue-waiting" role="status">
+      <div ref="dialogueBox" class="pc-dialogue-box" :class="{ 'pc-dialogue-box--notice': !!modelConfigurationNotice }">
+        <p v-if="modelConfigurationNotice" class="pc-dialogue-text pc-model-configuration-notice" role="status">{{ modelConfigurationNotice }}</p>
+        <p v-else-if="waitingForReply" class="pc-dialogue-waiting" role="status">
           <component v-if="material3" :is="'md-linear-progress'" class="pc-material-progress" indeterminate aria-hidden="true" />
           <span v-else class="pc-waiting-dots" aria-hidden="true"><i /><i /><i /></span>
           <span>正在等待回复…</span>
@@ -928,28 +947,28 @@ onBeforeUnmount(() => {
              answer renders the same safe markdown the history panel uses. -->
         <div v-else-if="!dialogueTyping && dialogueText.trim()" class="pc-dialogue-text markdown-body" aria-live="polite" v-html="renderMarkdown(dialogueText)" />
         <p v-else class="pc-dialogue-text" aria-live="polite">{{ dialogueText }}<span v-if="dialogueTyping" class="pc-caret" aria-hidden="true" /></p>
+        <component :is="buttonTag('md-text-button')"
+          v-if="modelConfigurationNotice"
+          type="button"
+          class="pc-configure-model pc-feedback-action"
+          @click="openModelConfiguration"
+        ><Settings :slot="material3 ? 'icon' : undefined" :size="material3 ? 18 : 14" aria-hidden="true" />配置模型服务</component>
         <div class="pc-dialogue-foot">
-          <span class="pc-dialogue-ctx">{{ dialogueCtx }}</span>
+          <span class="pc-dialogue-ctx">{{ modelConfigurationNotice ? '模型配置提示' : dialogueCtx }}</span>
           <span v-if="toolActivity" class="pc-dialogue-ctx pc-tool-activity" role="status">{{ toolActivity }}</span>
-          <span v-if="copyFeedback" class="pc-dialogue-ctx pc-copy-feedback" role="status">{{ copyFeedback }}</span>
-          <span v-if="speechFeedback" class="pc-dialogue-ctx pc-copy-feedback" role="status">{{ speechFeedback }}</span>
-          <component v-if="material3" :is="'md-icon-button'" class="pc-copy" type="button" aria-label="复制这次回复"
+          <span v-if="copyFeedback && !modelConfigurationNotice" class="pc-dialogue-ctx pc-copy-feedback" role="status">{{ copyFeedback }}</span>
+          <span v-if="speechFeedback && !modelConfigurationNotice" class="pc-dialogue-ctx pc-copy-feedback" role="status">{{ speechFeedback }}</span>
+          <component v-if="material3 && !modelConfigurationNotice" :is="'md-icon-button'" class="pc-copy" type="button" aria-label="复制这次回复"
             :disabled="dialogueTyping || !dialogueText.trim()" @click="copyReply"><Copy :size="18" aria-hidden="true" /></component>
-          <component v-if="material3 && speechSupported" :is="'md-icon-button'" class="pc-speak" type="button" aria-label="朗读这次回复"
+          <component v-if="material3 && speechSupported && !modelConfigurationNotice" :is="'md-icon-button'" class="pc-speak" type="button" aria-label="朗读这次回复"
             :disabled="dialogueTyping || !dialogueText.trim()" @click="readAloud"><Volume2 :size="18" aria-hidden="true" /></component>
         </div>
       </div>
       <Teleport :to="mobileFeedbackRegion" :disabled="!material3 || !mobileFeedbackRegion">
-      <div v-if="turnFeedback" class="pc-feedback" :data-kind="turnFeedback.kind" role="status">
+      <div v-if="turnFeedback && !modelConfigurationNotice" class="pc-feedback" :data-kind="turnFeedback.kind" role="status">
         <span>{{ turnFeedback.message }}</span>
         <component :is="buttonTag('md-text-button')"
-          v-if="turnFeedback.action === 'configure-model'"
-          type="button"
-          class="pc-configure-model pc-feedback-action"
-          @click="settingsOpen = true"
-        ><Settings :slot="material3 ? 'icon' : undefined" :size="material3 ? 18 : 14" aria-hidden="true" />配置模型服务</component>
-        <component :is="buttonTag('md-text-button')"
-          v-else-if="failedTurn"
+          v-if="failedTurn"
           type="button"
           class="pc-retry pc-feedback-action"
           :disabled="sending || diaryWriting"
@@ -1081,7 +1100,7 @@ onBeforeUnmount(() => {
           @write="writeDiary" @refresh="loadDiary(true)" @toggle-history="diaryHistoryOpen = !diaryHistoryOpen"
           @select="openPastDiary" @today="closePastDiary" />
     </AervoxDialog>
-    <MobileSettingsDialog v-model="settingsOpen" :panels="props.settingsPanels" />
+    <MobileSettingsDialog ref="settingsDialog" v-model="settingsOpen" :panels="props.settingsPanels" />
     <ExtensionSlot name="companion:drawers" />
   </div>
 </template>
@@ -1527,8 +1546,7 @@ onBeforeUnmount(() => {
 .proactive-companion[data-design-system="material3"] .pc-stage { padding-top: 0; }
 .proactive-companion[data-design-system="material3"] .pc-pet-status {
   top: 2px; padding: 2px 10px; border-radius: 999px;
-  background: color-mix(in srgb, var(--pc-bg, #101318) 70%, transparent);
-  backdrop-filter: blur(8px);
+  background: var(--md-sys-color-surface-container);
   font-size: 12px; line-height: 16px; font-weight: 500; letter-spacing: .5px;
 }
 .proactive-companion[data-design-system="material3"] .pc-pet-status::before { background: var(--md-sys-color-outline); }
@@ -1657,43 +1675,41 @@ onBeforeUnmount(() => {
 /* Keep feedback, its action and the editable draft available together above an IME. */
 .proactive-companion[data-design-system="material3"].pc-viewport--short.pc-has-feedback .pc-whisper-input textarea { max-height: 32px; }
 
-/* --- 观感精修：气泡 / 输入区 / 卡片 / 底栏 --- */
+/* Solid Material surfaces keep dialogue legible over the character. */
 .proactive-companion[data-design-system="material3"] .pc-dialogue-box {
-  border-radius: 20px; padding: 18px 20px 14px;
-  /* 玻璃渐变下垫近实底：对话层覆盖角色下半身时文字仍可读，观感不变。 */
-  background:
-    linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.03)),
-    color-mix(in srgb, var(--pc-card, #171b22) 88%, transparent);
-  backdrop-filter: blur(18px);
-  border: 1px solid var(--pc-line, rgba(255,255,255,.10));
-  box-shadow: 0 12px 32px -18px rgba(0,0,0,.45);
+  border-radius: 28px; padding: 18px 20px 14px;
+  background: var(--md-sys-color-surface-container-low);
+  border: 0;
+  box-shadow: none;
 }
-.proactive-companion[data-design-system="material3"] .pc-dialogue-text { font-size: 15px; line-height: 25px; }
+.proactive-companion[data-design-system="material3"] .pc-dialogue-text { font-size: 16px; line-height: 24px; }
 .proactive-companion[data-design-system="material3"] .pc-whisper-input {
-  border-radius: 999px; padding: 6px 6px 6px 18px;
-  /* 与对话卡同一套「近实底玻璃」：同一层渐变 + 88% 卡片色 + 模糊，
-     这样输入条和卡片看起来是同一种材料，而不是两种灰。 */
-  background:
-    linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.03)),
-    color-mix(in srgb, var(--pc-card, #171b22) 88%, transparent);
-  backdrop-filter: blur(18px);
-  border: 1px solid var(--pc-line, rgba(255,255,255,.10));
-  box-shadow: 0 12px 32px -18px rgba(0,0,0,.45);
+  border-radius: 28px; padding: 6px 6px 6px 18px;
+  background: var(--md-sys-color-surface-container-high);
+  border: 0;
+  box-shadow: none;
 }
 .proactive-companion[data-design-system="material3"] .pc-whisper-input:focus-within {
-  border-color: var(--pc-accent, #9b7aff);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--pc-accent, #9b7aff) 28%, transparent), 0 10px 28px -12px rgba(0,0,0,.4);
+  outline: 2px solid var(--md-sys-color-primary);
+  outline-offset: 2px;
+  box-shadow: none;
 }
-.proactive-companion[data-design-system="material3"] .pc-whisper-input button {
-  border-radius: 999px; min-width: 44px; padding-inline: 16px;
-}
-.proactive-companion[data-design-system="material3"] .pc-whisper-label { font-size: 11px; letter-spacing: .02em; opacity: .72; }
 
 .proactive-companion[data-design-system="material3"] .pc-current-session { margin-block-end: 2px; }
 /* 名牌压在角色身上时保持可读：给一层贴近底色的圆角衬底。 */
 .proactive-companion[data-design-system="material3"] .pc-dialogue-name {
   padding: 3px 10px; border-radius: 999px;
-  background: color-mix(in srgb, var(--pc-bg, #101318) 72%, transparent);
-  backdrop-filter: blur(8px);
+  background: var(--md-sys-color-surface-container-low);
 }
+/* Keep the local configuration action reachable when the IME shortens the
+ * viewport. Only its text scrolls; the action remains within the same bubble. */
+.proactive-companion[data-platform="mobile"] .pc-deck-slide > .pc-dialogue-box.pc-dialogue-box--notice {
+  display: flex; flex-direction: column; gap: 8px; overflow: hidden;
+}
+.pc-dialogue-box--notice .pc-model-configuration-notice { margin: 0; }
+.proactive-companion[data-platform="mobile"] .pc-dialogue-box--notice .pc-model-configuration-notice {
+  flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain;
+}
+.pc-dialogue-box--notice .pc-configure-model { flex: 0 0 auto; align-self: flex-start; }
+.pc-dialogue-box--notice .pc-dialogue-foot { flex: 0 0 auto; margin-top: 0; padding-top: 0; border-top: 0; }
 </style>
