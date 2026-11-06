@@ -17,7 +17,7 @@ permissions:
 
 env:
   # Validate unified native UI and complete original-question consumers against the paired host.
-  HOST_COMMIT: ${{ inputs.host_commit || 'd91f94dc84882f8a791fb15a065231458d6c58e5' }}
+  HOST_COMMIT: ${{ inputs.host_commit || 'f242458fc0ba99751b1cd8947ba903237032d05d' }}
 
 jobs:
   integration:
