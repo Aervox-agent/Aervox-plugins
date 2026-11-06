@@ -36,12 +36,19 @@ const editTargetId = ref<string | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 const importing = ref(false)
 const exportingId = ref<string | null>(null)
+const activatingId = ref<string | null>(null)
 
 onMounted(() => {
   void loadPersonas()
 })
 
 const activePersonaId = computed(() => activePersona.value?.personaId ?? null)
+function hasLatestRevisionToActivate(persona: PersonaDto) {
+  return persona.id === activePersonaId.value && persona.currentRevisionId !== activePersona.value?.revisionId
+}
+function canActivate(persona: PersonaDto) {
+  return persona.id !== activePersonaId.value || hasLatestRevisionToActivate(persona)
+}
 
 function openCreate() {
   editTargetId.value = null
@@ -133,12 +140,17 @@ async function handleExport(persona: PersonaDto) {
 }
 
 async function handleActivate(persona: PersonaDto) {
+  if (activatingId.value) return
+  const updatingCurrent = hasLatestRevisionToActivate(persona)
+  activatingId.value = persona.id
   try {
-    await activatePersona(persona.id)
-    notify.success(`已切换当前人格为「${persona.name}」`)
+    await activatePersona(persona.id, persona.currentRevisionId)
+    notify.success(updatingCurrent ? `已启用「${persona.name}」的最新修订` : `已切换当前人格为「${persona.name}」`)
     await loadPersonas()
   } catch (e) {
     notify.error(e instanceof Error ? e.message : '激活人格失败')
+  } finally {
+    activatingId.value = null
   }
 }
 
@@ -239,10 +251,11 @@ function formatDate(isoString: string): string {
                   <Edit3 :size="14" class="menu-icon" />编辑
                 </el-dropdown-item>
                 <el-dropdown-item
-                  v-if="persona.id !== activePersonaId"
+                  v-if="canActivate(persona)"
+                  :disabled="!!activatingId"
                   @click="handleActivate(persona)"
                 >
-                  <Sparkles :size="14" class="menu-icon" />设为当前人格
+                  <Sparkles :size="14" class="menu-icon" />{{ hasLatestRevisionToActivate(persona) ? '启用最新修订' : '设为当前人格' }}
                 </el-dropdown-item>
                 <el-dropdown-item
                   :disabled="exportingId === persona.id"
@@ -262,6 +275,7 @@ function formatDate(isoString: string): string {
         <p class="persona-description">
           {{ persona.description || '暂无描述信息' }}
         </p>
+        <p v-if="hasLatestRevisionToActivate(persona)" class="persona-revision-notice" role="status">有更新待启用；当前仍使用已启用的修订。</p>
 
         <!-- 标签徽章栏（对齐图 1） -->
         <div class="persona-badges">
@@ -284,7 +298,7 @@ function formatDate(isoString: string): string {
           <small>创建时间: {{ formatDate(persona.createdAt) }}</small>
         </div>
         <div v-if="material3" class="persona-phone-actions">
-          <AervoxButton v-if="persona.id !== activePersonaId" variant="primary" type="button" @click="handleActivate(persona)"><Sparkles :size="18" />设为当前</AervoxButton>
+          <AervoxButton v-if="canActivate(persona)" variant="primary" type="button" :disabled="!!activatingId" @click="handleActivate(persona)"><Sparkles :size="18" />{{ hasLatestRevisionToActivate(persona) ? '启用最新修订' : '设为当前' }}</AervoxButton>
           <AervoxButton variant="secondary" type="button" @click="openEdit(persona)"><Edit3 :size="18" />编辑</AervoxButton>
           <AervoxButton variant="ghost" type="button" :disabled="exportingId === persona.id" @click="handleExport(persona)"><Download :size="18" />导出</AervoxButton>
           <AervoxButton variant="ghost" class="settings-record-delete" type="button" @click="handleDelete(persona)"><Trash2 :size="18" />删除</AervoxButton>
@@ -306,6 +320,7 @@ function formatDate(isoString: string): string {
 <style scoped>
 .persona-phone-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .persona-phone-actions > :deep(*) { flex: 1 1 120px; }
+.persona-revision-notice { margin: 0; color: var(--text-secondary); font-size: 12px; line-height: 1.6; }
 </style>
 
 <style scoped>

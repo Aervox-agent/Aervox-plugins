@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { enableAutoUnmount, flushPromises, shallowMount } from '@vue/test-utils';
 import PersonaEditDialog from '../src/persona/PersonaEditDialog.vue';
+vi.mock('@aervox/ui/companion', async original => ({
+  ...await original<typeof import('@aervox/ui/companion')>(),
+  getAvailableLive2DModels: () => [{ id: 'mizuki-default', displayName: 'Mizuki' }, { id: 'other-model', displayName: '另一形象' }],
+}));
 
 const api = vi.hoisted(() => ({
   loads: new Map<string, {resolve: (value: unknown) => void; reject: (cause: Error) => void}>(),
@@ -116,4 +120,58 @@ it('does not carry model-specific voice settings into another provider or model'
   wrapper.findComponent({name: 'VoiceAbilityCard'}).vm.$emit('update:modelValue', replacement);
   await save(wrapper);
   expect(api.update).toHaveBeenCalledWith('A', {...payload('A'), config: {...payload('A').config, voice: replacement}});
+});
+
+it('preserves an unavailable Live2D binding while saving other persona settings', async () => {
+  const wrapper = mount(); await wrapper.setProps({open: true}); await flushPromises();
+  const loaded = detail('A');
+  api.loads.get('A')!.resolve({...loaded, revision: {...loaded.revision, config: {...loaded.revision.config, live2dModelId: 'retired-model'}}});
+  await flushPromises();
+  const select = wrapper.get('#persona-live2d-model');
+  expect((select.element as HTMLSelectElement).value).toBe('retired-model');
+  expect(select.get('option[value="retired-model"]').attributes('disabled')).toBeDefined();
+  expect(wrapper.get('#persona-live2d-hint').text()).toContain('保留此绑定');
+  await wrapper.get('#persona-desc').setValue('更新说明');
+  await save(wrapper);
+  expect(api.update).toHaveBeenCalledWith('A', {...payload('A'), description: '更新说明', config: {...payload('A').config, live2dModelId: 'retired-model'}});
+});
+
+it('changes an unavailable binding only after an explicit choice and can return to the default', async () => {
+  const wrapper = mount(); await wrapper.setProps({open: true}); await flushPromises();
+  const loaded = detail('A');
+  api.loads.get('A')!.resolve({...loaded, revision: {...loaded.revision, config: {...loaded.revision.config, live2dModelId: 'retired-model'}}});
+  await flushPromises();
+  await wrapper.get('#persona-live2d-model').setValue('mizuki-default');
+  await save(wrapper);
+  expect(api.update).toHaveBeenLastCalledWith('A', {...payload('A'), config: {...payload('A').config, live2dModelId: 'mizuki-default'}});
+  await wrapper.get('#persona-live2d-model').setValue('');
+  await save(wrapper);
+  const config = api.update.mock.calls.at(-1)![1].config;
+  expect(config).not.toHaveProperty('live2dModelId');
+  expect(config).toEqual(payload('A').config);
+});
+
+it('does not replace B Live2D selection with a late A binding', async () => {
+  const wrapper = mount(); await wrapper.setProps({open: true}); await flushPromises();
+  const older = api.loads.get('A')!;
+  await wrapper.setProps({personaId: 'B'}); await flushPromises();
+  const current = detail('B');
+  api.loads.get('B')!.resolve({...current, revision: {...current.revision, config: {...current.revision.config, live2dModelId: 'other-model'}}});
+  await flushPromises();
+  const stale = detail('A');
+  older.resolve({...stale, revision: {...stale.revision, config: {...stale.revision.config, live2dModelId: 'mizuki-default'}}});
+  await flushPromises();
+  await save(wrapper);
+  expect(api.update).toHaveBeenLastCalledWith('B', {...payload('B'), config: {...payload('B').config, live2dModelId: 'other-model'}});
+});
+
+it('omits a binding for a new default persona and saves an explicit choice', async () => {
+  const wrapper = mount(); await wrapper.setProps({open: true, personaId: null}); await flushPromises();
+  await wrapper.get('#persona-name').setValue('新角色');
+  await wrapper.get('#persona-prompt').setValue('新设定');
+  await save(wrapper);
+  expect(api.create.mock.calls.at(-1)![0].config).not.toHaveProperty('live2dModelId');
+  await wrapper.get('#persona-live2d-model').setValue('mizuki-default');
+  await save(wrapper);
+  expect(api.create.mock.calls.at(-1)![0].config.live2dModelId).toBe('mizuki-default');
 });

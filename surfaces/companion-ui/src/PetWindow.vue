@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import {ChevronDown, ChevronUp, Hand, Smile, X} from 'lucide-vue-next'
 import {computed, onBeforeUnmount, onMounted, ref, shallowRef} from 'vue'
-import {PetWithFallback, UserQuestionComposer} from '@aervox/ui/companion'
+import {CompanionAvatar, UserQuestionComposer, useCompanionAvatarBinding} from '@aervox/ui/companion'
 import {createConversationController, getClientTransport, useAervoxClient} from '@aervox/api-client'
 import type {AskUserQuestionAnswerItem, UserQuestionRequiredEventData} from '@aervox/contracts'
 import {replyBubbleDurationMs, stripMarkdownForBubble} from './quick-chat'
@@ -11,6 +11,7 @@ import './pet.css'
 import '@aervox/ui/theme/companion'
 import {useUISurfaceContext} from '@aervox/ui-host'
 const surfaceContext = useUISurfaceContext()
+const avatarBinding = useCompanionAvatarBinding()
 const client = useAervoxClient()
 const turnController = createConversationController(getClientTransport(), surfaceContext.signal)
 
@@ -274,7 +275,7 @@ onBeforeUnmount(() => {
     </transition>
     <div class="pet-stage">
       <div class="pet-character">
-        <PetWithFallback @on-speak="onSpeak" />
+        <CompanionAvatar :model="avatarBinding.model.value" :binding-state="avatarBinding.state.value" @retry-binding="avatarBinding.refresh" @on-speak="onSpeak" />
       </div>
     </div>
     <!-- 底部常驻条：快捷输入 + 展开/收起按钮；功能坞向上展开 -->

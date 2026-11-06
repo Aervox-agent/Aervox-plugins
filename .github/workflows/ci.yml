@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 env:
-  # This public integration includes the reviewed companion home, read-only catalogs, authoritative permits and paired root lock.
-  HOST_COMMIT: ${{ inputs.host_commit || '529fac9c81c0ba63ba69278540496a556f143ee3' }}
+  # Validate the unified native UI and avatars against their public host integration commit.
+  HOST_COMMIT: ${{ inputs.host_commit || '287ea9e9fd36bfc037f95963ed126bdc6c065856' }}
 
 jobs:
   integration:

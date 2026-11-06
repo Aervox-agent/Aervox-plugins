@@ -19,7 +19,7 @@ it('detaches an active quick chat when the companion root is removed', async () 
   });
   const wrapper = mount(UISurfaceHost, {
     props: { plugin: definition, surface: 'companion', platform: 'desktop' },
-    global: { stubs: { Live2DPet: true, PetHero: true } },
+    global: { stubs: { CompanionAvatar: true } },
   });
   await vi.waitFor(() => expect(wrapper.find('input').exists()).toBe(true), { timeout: 5000 });
   await wrapper.get('input').setValue('你好');

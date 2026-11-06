@@ -14,7 +14,7 @@ beforeEach(() => {
   configureAervoxClient({sessionId:'pet-session',transport:{streamTurn,observeTurn,request,submitQuestionAnswers,decideToolApproval}});
 });
 async function pet() {
-  const wrapper = mount(UISurfaceHost,{props:{plugin:definition,surface:'companion',platform:'desktop'},global:{stubs:{PetWithFallback:true}}});
+  const wrapper = mount(UISurfaceHost,{props:{plugin:definition,surface:'companion',platform:'desktop'},global:{stubs:{CompanionAvatar:true}}});
   await vi.waitFor(() => expect(wrapper.find('.pet-window').exists()).toBe(true));
   await wrapper.get('.pet-quick-input').setValue('帮我安排');
   await wrapper.get('.pet-quick-input').trigger('keydown',{key:'Enter'});
