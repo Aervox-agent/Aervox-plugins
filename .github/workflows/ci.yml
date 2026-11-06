@@ -17,7 +17,7 @@ permissions:
 
 env:
   # Validate the unified native UI and avatars against their public host integration commit.
-  HOST_COMMIT: ${{ inputs.host_commit || 'fd3d3ad9c05a3bc4e9494911536bacb153401b49' }}
+  HOST_COMMIT: ${{ inputs.host_commit || '52ee6ec3147655b854e7a9599fc5ee20ab3c9ba0' }}
 
 jobs:
   integration:
