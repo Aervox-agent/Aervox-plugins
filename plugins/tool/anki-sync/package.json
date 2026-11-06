@@ -1,0 +1,11 @@
+{
+  "name": "@aervox/plugin-anki-sync",
+  "version": "1.1.0",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "type": "module",
+  "description": "Trusted Anki format-catalog tool; source is not distributed in declaration bundles",
+  "exports": { "./server": { "types": "./dist/server/index.d.ts", "default": "./dist/server/index.js" } },
+  "scripts": { "build": "tsc -p tsconfig.json", "typecheck": "tsc -p tsconfig.json --noEmit", "test": "vitest run" },
+  "dependencies": { "@aervox/core": "workspace:*", "@aervox/host-plugin-api": "workspace:*", "zod": "4.6.7" }
+}
