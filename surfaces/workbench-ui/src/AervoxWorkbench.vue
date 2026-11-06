@@ -53,7 +53,7 @@ import {
 import { useUISurfaceContext } from '@aervox/ui-host';
 import { PanelLeft } from 'lucide-vue-next';
 
-import { createConversationController, getClientTransport, useAervoxApi, useAervoxPlugins, useAervoxProjects, useAervoxSessions } from '@aervox/api-client';
+import { createConversationController, createSessionHistoryClient, getClientTransport, useAervoxApi, useAervoxClient, useAervoxPlugins, useAervoxProjects, useAervoxSessions } from '@aervox/api-client';
 import type { TurnCallbacks } from '@aervox/api-client';
 import type { TurnAttachmentRef } from '@aervox/contracts';
 
@@ -144,6 +144,81 @@ const timer = useWorkbenchTimer({
   },
 });
 
+// The selected session is settled before history is read. In-flight submissions
+// and interactions retain their original session, including an unknown receipt.
+const sessionStore = useAervoxSessions();
+const sessionClient = useAervoxClient();
+const historyReady = ref(false);
+const sessionOperationBusy = ref(false);
+const sessionWriteBusy = ref(false);
+const historyBusy = computed(() => sessionOperationBusy.value || sessionWriteBusy.value);
+const ownerSessionId = ref(sessionStore.activeSessionId.value);
+const sessionLockNotice = ref('');
+const sessions = {
+  ...sessionStore,
+  switchSession(id: string) {
+    if (id !== sessionStore.activeSessionId.value && !allowSessionChange()) return;
+    sessionStore.switchSession(id);
+  },
+  createNewSession: (...args: Parameters<typeof sessionStore.createNewSession>) => {
+    if (!allowSessionChange()) return Promise.reject(new Error('conversation_session_busy'));
+    const [title, id, projectId, options] = args;
+    return writeSession(() => sessionStore.createNewSession(title, id, projectId, { select: false }),
+      created => options?.select === false ? undefined : created.id);
+  },
+  deleteSession(id: string, options?: {select?: boolean}) {
+    if (id === ownerSessionId.value && !allowSessionChange()) return Promise.reject(new Error('conversation_session_busy'));
+    if (sessionWriteBusy.value) return Promise.reject(new Error('conversation_session_busy'));
+    let replacement: string | undefined;
+    return writeSession(async () => {
+      const wasSelected = id === sessions.activeSessionId.value;
+      const deleted = await sessionStore.deleteSession(id, { select: false });
+      if (deleted && wasSelected && options?.select !== false) {
+        replacement = sessionStore.sessions.value[0]?.id ?? '';
+        if (!replacement) {
+          // The deletion is already committed. A failed replacement must leave
+          // the old identity empty instead of displaying the deleted session.
+          const created = await sessionStore.createNewSession('新对话', undefined, undefined, { select: false }).catch(() => undefined);
+          replacement = created?.id ?? '';
+        }
+      }
+      return deleted;
+    }, () => replacement);
+  },
+};
+async function writeSession<T>(write: () => Promise<T>, selection?: (result: T) => string | undefined): Promise<T> {
+  sessionWriteBusy.value = true;
+  let result: T;
+  try {
+    result = await write();
+  } finally {
+    sessionWriteBusy.value = false;
+  }
+  if (!surfaceContext.signal.aborted) {
+    const next = selection?.(result);
+    if (next !== undefined) sessionClient.setSessionId(next);
+  }
+  return result;
+}
+function allowSessionChange() {
+  if (!conversation.historyBlocked.value) {
+    sessionLockNotice.value = '';
+    return true;
+  }
+  sessionLockNotice.value = '当前对话还有执行或待确认的请求，请先在原对话处理；回看记录不会改变它。';
+  return false;
+}
+// This watcher precedes history and draft watchers. A shared-client selection
+// change must not attach an old reply or receipt to the newly selected session.
+watch(sessionStore.activeSessionId, id => {
+  if (id !== ownerSessionId.value && conversation.historyBlocked.value) {
+    sessionLockNotice.value = '当前请求仍属于原对话，已保留原会话。';
+    sessionStore.switchSession(ownerSessionId.value);
+  } else {
+    ownerSessionId.value = id;
+  }
+}, { flush: 'sync' });
+
 // 4. Shared conversation policy and surface presentation
 const turnController = createConversationController(getClientTransport(), surfaceContext.signal);
 const conversation = useWorkbenchConversation({
@@ -152,11 +227,14 @@ const conversation = useWorkbenchConversation({
   controller: turnController,
   onApprovalDecision: resumeApprovedTurn,
   onRetrySubmission: retrySubmission,
+  history: {
+    sessionId: sessions.activeSessionId,
+    client: createSessionHistoryClient(getClientTransport()),
+    ready: historyReady,
+    busy: historyBusy,
+    signal: surfaceContext.signal,
+  },
 });
-
-// 5. Session identity is created before the composer so mobile drafts stay
-// isolated per conversation across WebView restarts and session switches.
-const sessions = useAervoxSessions();
 
 // 6. Composer Composable
 const composer = useWorkbenchComposer({
@@ -187,12 +265,6 @@ const commandPaletteOpen = ref(false);
 const projectManagerOpen = ref(false);
 const importSessionOpen = ref(false);
 
-watch(() => sessions.activeSessionId.value, (newId, oldId) => {
-  if (newId && oldId && newId !== oldId && !conversation.streaming.value) {
-    conversation.resetStory();
-  }
-});
-
 // 抽屉与弹窗组件懒挂载守卫（首次打开时才挂载对应异步组件实例，消除首屏初始加载开销）
 const toolsMounted = ref(false);
 const historyMounted = ref(false);
@@ -215,7 +287,6 @@ watch(() => commandPaletteOpen.value, (open) => { if (open) commandPaletteMounte
 watch(() => projectManagerOpen.value, (open) => { if (open) projectManagerMounted.value = true; }, { immediate: true });
 watch(() => importSessionOpen.value, (open) => { if (open) importSessionMounted.value = true; }, { immediate: true });
 
-let isSendingMessage = false;
 let lastSubmissionView: {sessionId: string; lineId: number} | undefined;
 async function retrySubmission() {
   if (!lastSubmissionView || lastSubmissionView.sessionId !== sessions.activeSessionId.value) return;
@@ -225,11 +296,14 @@ async function retrySubmission() {
 
 // 统一整合发送消息逻辑
 async function sendMessage(value = composer.input.value, options?: { metadata?: Record<string, unknown>; resend?: boolean }) {
-  if (isSendingMessage) return;
+  if (conversation.historyBlocked.value) return;
   const text = value.trim();
   if ((!text && composer.pendingAttachments.value.length === 0) || conversation.streaming.value || composer.attachmentUploading.value) return;
 
-  isSendingMessage = true;
+  const submittedSessionId = sessions.activeSessionId.value;
+  ownerSessionId.value = submittedSessionId;
+  sessionOperationBusy.value = true;
+  sessionLockNotice.value = '';
   try {
     let attachmentRefs: TurnAttachmentRef[] = [];
     if (composer.pendingAttachments.value.length > 0) {
@@ -255,7 +329,6 @@ async function sendMessage(value = composer.input.value, options?: { metadata?: 
   const resolvedOutgoing = resolveOutgoingMessage(registry, outgoingText, turnMetadataIn);
   const outgoing = resolvedOutgoing.text;
   const turnMetadata = resolvedOutgoing.metadata;
-  const submittedSessionId = sessions.activeSessionId.value;
   composer.beginDraftSubmission(displayText, submittedSessionId);
 
   const assistantLine = conversation.createStoryLine('assistant', '', 'streaming');
@@ -354,7 +427,7 @@ async function sendMessage(value = composer.input.value, options?: { metadata?: 
         signal: surfaceContext.signal,
         onAccepted: turnId => {
           liveAssistantLine.turnId = turnId;
-          if (composer.input.value.trim() === displayText) composer.input.value = '';
+          composer.acceptDraftSubmission(submittedSessionId);
         },
         toolApprovalMode: conversation.toolApprovalMode.value,
         attachments: attachmentRefs.length > 0 ? attachmentRefs : undefined,
@@ -381,7 +454,7 @@ async function sendMessage(value = composer.input.value, options?: { metadata?: 
     await conversation.scrollStoryToBottom();
   }
   } finally {
-    isSendingMessage = false;
+    sessionOperationBusy.value = false;
   }
 }
 
@@ -583,7 +656,9 @@ onMounted(() => {
     void proactive.refreshProactiveStatus();
   }
 
-  void sessions.fetchSessions();
+  void sessions.fetchSessions().then(() => {
+    if (!surfaceContext.signal.aborted) historyReady.value = true;
+  });
   void projects.fetchProjects();
   void conversation.scrollStoryToBottom();
 
@@ -671,6 +746,7 @@ onUnmounted(() => {
         </header>
 
         <div class="standard-chat-container">
+          <p v-if="sessionLockNotice" role="status">{{ sessionLockNotice }}</p>
           <StandardConversation />
           <div class="standard-composer-wrap">
             <component
@@ -708,6 +784,7 @@ onUnmounted(() => {
       <WorkbenchNavPill />
 
       <div class="immersive-console">
+        <p v-if="sessionLockNotice" role="status">{{ sessionLockNotice }}</p>
         <ConversationConsole />
         <component
           :is="resolvedComposerComponent"

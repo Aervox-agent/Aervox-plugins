@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 env:
-  # Validate session fixes against the reviewed mobile host and final plugin baseline.
-  HOST_COMMIT: ${{ inputs.host_commit || 'c420bda34ab1b3be4ca2281b6a676d262684a26d' }}
+  # Shared history and delayed selection ports are prepared before this collection revision.
+  HOST_COMMIT: ${{ inputs.host_commit || 'c6115be82eca8bda839297efc21cebfc07f87953' }}
 
 jobs:
   integration:
