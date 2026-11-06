@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 env:
-  # This public integration carries durable original question identities and the compatible host API client.
-  HOST_COMMIT: ${{ inputs.host_commit || 'fbf77ed0730658cd7b2f020bf5558bc6527a9bbc' }}
+  # This public integration includes reviewed durable questions and their original identity consumers.
+  HOST_COMMIT: ${{ inputs.host_commit || '8c3039970ee8a032a723fe9aa6fc5e804c6901e1' }}
 
 jobs:
   integration:
