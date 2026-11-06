@@ -784,13 +784,12 @@ async function deleteMobileSession(id: string) {
     sessionManageError.value = '当前会话仍在回答或等待交互，请先停止再删除。';
     return;
   }
-  // Deleting a conversation must not leave its unsent draft behind in the host
-  // cache. Clearing the input first removes that stored draft; a failed delete
-  // restores the same text so the user never loses it.
+  // Preserve drafts while deletion is pending: this surface can unmount before
+  // a refusal arrives. After acknowledgement, the session hook changes draft
+  // ownership and clearDeletedSessionDrafts removes only the deleted identity.
   const draft = wasActive ? whisperText.value : '';
   // Whether a replacement conversation survives decides the reported destination.
   const remaining = sessions.sessions.value.filter(item => item.id !== id).length;
-  if (draft) whisperText.value = '';
   sessionManaging.value = true; sessionManageError.value = null; sessionFeedback.value = ''; sessionCreationError.value = '';
   try {
     await sessions.deleteSession(id);
@@ -807,7 +806,6 @@ async function deleteMobileSession(id: string) {
       : `已删除「${target.title}」。`;
   } catch (error) {
     if (surface.signal.aborted) return;
-    if (draft && !whisperText.value) whisperText.value = draft;
     sessionManageError.value = sessionFailure(error, '删除结果未能确认，列表保持不变。可以刷新后重试。');
     if (error instanceof AervoxHttpError && error.status === 404) await refreshMobileSessions();
   } finally { sessionManaging.value = false; }

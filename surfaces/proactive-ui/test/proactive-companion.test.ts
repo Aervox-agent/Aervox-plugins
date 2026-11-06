@@ -823,6 +823,36 @@ it('retains the active session text and attachment when deletion is rejected', a
   expect(wrapper.getComponent(MobileSessionsDialog).props('manageError')).toContain('删除结果未能确认');
 });
 
+it.each(['rejected', 'confirmed'] as const)('keeps deletion-pending drafts until a %s receipt after unmount', async outcome => {
+  const second = { ...recentSession, id: 'second', title: '另一段对话' };
+  const attachment = JSON.stringify({ name: 'private.txt', text: '尚未确认删除的附件' });
+  const values = new Map([
+    ['aervox-mobile-draft:ses_recent', '尚未确认删除的草稿'],
+    ['aervox-mobile-draft:attachment-ses_recent', attachment],
+    ['aervox-mobile-draft:second', '其他会话的草稿'],
+  ]);
+  const storage = { getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+    removeItem: (key: string) => { values.delete(key); } };
+  let confirm!: () => void;
+  let reject!: (reason: unknown) => void;
+  request.mockImplementation(async (method, path) => {
+    if (method === 'GET' && path === '/v1/sessions') return { items: [recentSession, second] };
+    if (method === 'DELETE') return new Promise<void>((resolve, refuse) => { confirm = resolve; reject = refuse; });
+    return requestImplementation(method, path);
+  });
+  const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true, storage);
+  wrapper.getComponent(MobileSessionsDialog).vm.$emit('delete', recentSession.id); await flushPromises();
+  expect(values.get('aervox-mobile-draft:ses_recent')).toBe('尚未确认删除的草稿');
+  wrapper.unmount();
+  if (outcome === 'rejected') reject(new AervoxHttpError(500, 'native', { code: 'STORE_FAILED' }));
+  else confirm();
+  await flushPromises();
+  expect(values.get('aervox-mobile-draft:ses_recent')).toBe(outcome === 'rejected' ? '尚未确认删除的草稿' : undefined);
+  expect(values.get('aervox-mobile-draft:attachment-ses_recent')).toBe(outcome === 'rejected' ? attachment : undefined);
+  expect(values.get('aervox-mobile-draft:second')).toBe('其他会话的草稿');
+});
+
 it('lets a deliberately cleared native draft stay cleared after a definite configuration refusal', async () => {
   streamTurn.mockRejectedValueOnce(new AervoxHttpError(422, 'native', { code: 'MODEL_NOT_CONFIGURED' }));
   const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
