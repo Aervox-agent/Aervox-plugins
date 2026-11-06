@@ -16,11 +16,8 @@ permissions:
   contents: read
 
 env:
-  # Pinned to the host commit that carries this round's fixes (backup scope,
-  # dependency-audit stale exceptions, blocking emulator gate). The previous
-  # pin predates them, so the audit step failed on stale minimatch exceptions
-  # that no longer exist upstream.
-  HOST_COMMIT: ${{ inputs.host_commit || '8cdce6f7210f8f66e30ea18f00b5ddf9a3e7f15a' }}
+  # Validate session fixes against the reviewed mobile host and final plugin baseline.
+  HOST_COMMIT: ${{ inputs.host_commit || 'c420bda34ab1b3be4ca2281b6a676d262684a26d' }}
 
 jobs:
   integration:

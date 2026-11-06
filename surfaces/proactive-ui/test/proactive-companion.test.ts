@@ -747,6 +747,82 @@ it('refuses to delete an executing mobile session and keeps the draft and conver
   expect((input.element as HTMLTextAreaElement).value).toBe('正在发送的消息');
 });
 
+it('clears an inactive deleted session text and attachment only after its deletion receipt', async () => {
+  const second = { ...recentSession, id: 'second', title: '另一段对话' };
+  const values = new Map([
+    ['aervox-mobile-draft:ses_recent', '当前会话草稿'],
+    ['aervox-mobile-draft:second', '被删会话草稿'],
+    ['aervox-mobile-draft:attachment-second', JSON.stringify({ name: 'private.txt', text: '被删附件正文' })],
+  ]);
+  const storage = { getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+    removeItem: (key: string) => { values.delete(key); } };
+  let confirm!: () => void;
+  request.mockImplementation(async (method, path) => {
+    if (method === 'GET' && path === '/v1/sessions') return { items: [recentSession, second] };
+    if (method === 'DELETE' && path === '/v1/sessions/second') return new Promise<void>(resolve => { confirm = resolve; });
+    return requestImplementation(method, path);
+  });
+  const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true, storage);
+  wrapper.getComponent(MobileSessionsDialog).vm.$emit('delete', second.id); await flushPromises();
+  expect(values.get('aervox-mobile-draft:second')).toBe('被删会话草稿');
+  expect(values.get('aervox-mobile-draft:attachment-second')).toContain('被删附件正文');
+  confirm(); await flushPromises();
+  expect(values.has('aervox-mobile-draft:second')).toBe(false);
+  expect(values.has('aervox-mobile-draft:attachment-second')).toBe(false);
+  expect(values.get('aervox-mobile-draft:ses_recent')).toBe('当前会话草稿');
+  expect((wrapper.get('.pc-whisper-input textarea').element as HTMLTextAreaElement).value).toBe('当前会话草稿');
+});
+
+it('clears the active deleted session attachment while preserving replacement session drafts', async () => {
+  const second = { ...recentSession, id: 'second', title: '另一段对话' };
+  const values = new Map([
+    ['aervox-mobile-draft:ses_recent', '待删除的草稿'],
+    ['aervox-mobile-draft:attachment-ses_recent', JSON.stringify({ name: 'old.txt', text: '待删除的附件正文' })],
+    ['aervox-mobile-draft:second', '下一段草稿'],
+    ['aervox-mobile-draft:attachment-second', JSON.stringify({ name: 'next.txt', text: '下一段附件正文' })],
+  ]);
+  const storage = { getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+    removeItem: (key: string) => { values.delete(key); } };
+  request.mockImplementation(async (method, path) => {
+    if (method === 'GET' && path === '/v1/sessions') return { items: [recentSession, second] };
+    if (method === 'DELETE' && path === '/v1/sessions/ses_recent') return undefined;
+    return requestImplementation(method, path);
+  });
+  const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true, storage);
+  expect(wrapper.get('.pc-attachment-chip').text()).toContain('old.txt');
+  wrapper.getComponent(MobileSessionsDialog).vm.$emit('delete', recentSession.id); await flushPromises();
+  expect(values.has('aervox-mobile-draft:ses_recent')).toBe(false);
+  expect(values.has('aervox-mobile-draft:attachment-ses_recent')).toBe(false);
+  expect(values.get('aervox-mobile-draft:second')).toBe('下一段草稿');
+  expect(values.get('aervox-mobile-draft:attachment-second')).toContain('下一段附件正文');
+  expect((wrapper.get('.pc-whisper-input textarea').element as HTMLTextAreaElement).value).toBe('下一段草稿');
+  expect(wrapper.get('.pc-attachment-chip').text()).toContain('next.txt');
+});
+
+it('retains the active session text and attachment when deletion is rejected', async () => {
+  const attachment = JSON.stringify({ name: 'private.txt', text: '仍需保留的附件正文' });
+  const values = new Map([
+    ['aervox-mobile-draft:ses_recent', '仍需保留的草稿'],
+    ['aervox-mobile-draft:attachment-ses_recent', attachment],
+  ]);
+  const storage = { getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+    removeItem: (key: string) => { values.delete(key); } };
+  request.mockImplementation(async (method, path) => {
+    if (method === 'DELETE') throw new AervoxHttpError(500, 'native', { code: 'STORE_FAILED' });
+    return requestImplementation(method, path);
+  });
+  const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true, storage);
+  wrapper.getComponent(MobileSessionsDialog).vm.$emit('delete', recentSession.id); await flushPromises();
+  expect(values.get('aervox-mobile-draft:ses_recent')).toBe('仍需保留的草稿');
+  expect(values.get('aervox-mobile-draft:attachment-ses_recent')).toBe(attachment);
+  expect((wrapper.get('.pc-whisper-input textarea').element as HTMLTextAreaElement).value).toBe('仍需保留的草稿');
+  expect(wrapper.get('.pc-attachment-chip').text()).toContain('private.txt');
+  expect(wrapper.getComponent(MobileSessionsDialog).props('manageError')).toContain('删除结果未能确认');
+});
+
 it('lets a deliberately cleared native draft stay cleared after a definite configuration refusal', async () => {
   streamTurn.mockRejectedValueOnce(new AervoxHttpError(422, 'native', { code: 'MODEL_NOT_CONFIGURED' }));
   const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);

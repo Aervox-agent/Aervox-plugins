@@ -765,6 +765,15 @@ async function renameMobileSession(id: string, title: string) {
     if (error instanceof AervoxHttpError && error.status === 404) await refreshMobileSessions();
   } finally { sessionManaging.value = false; }
 }
+function clearDeletedSessionDrafts(id: string) {
+  try {
+    const target = props.draftStorage ?? (typeof localStorage === 'undefined' ? undefined : localStorage);
+    // Use the acknowledged deleted identity: the session hook may already have
+    // selected a replacement, whose text and attachment must stay intact.
+    target?.removeItem(`aervox-mobile-draft:${encodeURIComponent(id)}`);
+    target?.removeItem(`aervox-mobile-draft:attachment-${id}`);
+  } catch { /* Native storage exposes its persistence failure through the host. */ }
+}
 async function deleteMobileSession(id: string) {
   if (sessionManaging.value) return;
   const target = sessions.sessions.value.find(item => item.id === id);
@@ -785,6 +794,7 @@ async function deleteMobileSession(id: string) {
   sessionManaging.value = true; sessionManageError.value = null; sessionFeedback.value = ''; sessionCreationError.value = '';
   try {
     await sessions.deleteSession(id);
+    clearDeletedSessionDrafts(id);
     if (surface.signal.aborted) return;
     if (wasActive) {
       resetMobilePresentation();
