@@ -543,7 +543,7 @@ it('retries the original unknown whisper and preserves newer draft edits', async
 it('keeps a new question visible when an earlier multi-question answer finishes', async () => {
   let forward!: TurnCallbacks;
   streamTurn.mockImplementation(async (_s,_c,cb,options)=>{
-    forward=cb;await options.onAccepted('turn');cb.onUserQuestion({turnId:'turn',step:1,questions:[
+    forward=cb;await options.onAccepted('turn');cb.onUserQuestion({turnId:'turn',attemptId:'attempt',invocationId:'attempt:1:1',identityStatus:'available',step:1,questions:[
       {id:'q',question:'选主题',multiSelect:true,options:[{label:'A'},{label:'B'}]},
       {id:'detail',question:'补充要求'},
     ]});cb.onDone();
@@ -555,10 +555,10 @@ it('keeps a new question visible when an earlier multi-question answer finishes'
   await sendFromInput(wrapper);await flushPromises();
   await wrapper.findAll('.uq-option-btn')[0]!.trigger('click');await wrapper.findAll('.uq-option-btn')[1]!.trigger('click');
   await wrapper.findAll('.uq-custom-input input')[1]!.setValue('带示例');await wrapper.get('.uq-submit-btn').trigger('click');
-  forward.onUserQuestion!({turnId:'turn',step:2,questions:[{id:'next',question:'新的确认'}]});saved();await flushPromises();
+  forward.onUserQuestion!({turnId:'turn',attemptId:'attempt',invocationId:'attempt:2:1',identityStatus:'available',step:2,questions:[{id:'next',question:'新的确认'}]});saved();await flushPromises();
   expect(submitQuestionAnswers).toHaveBeenCalledWith('turn',[
     {id:'q',selected:['A','B'],custom:undefined},{id:'detail',selected:[],custom:'带示例'},
-  ],expect.any(AbortSignal));
+  ],expect.any(AbortSignal),{attemptId:'attempt',invocationId:'attempt:1:1',step:1});
   expect(wrapper.get('.pc-interaction').text()).toContain('新的确认');
 });
 
@@ -1315,10 +1315,10 @@ it('resumes the identified turn after a saved answer when the first question str
     observeTurn: observeTurn as never, submitQuestionAnswers: submitAnswers, decideToolApproval: vi.fn() } });
   streamTurn.mockImplementation(async (_id, _text, cb, options) => {
     await options!.onAccepted!('turn_mobile_questions');
-    cb.onUserQuestion!({ turnId: 'turn_mobile_questions', step: 1, questions: [{ id: 'q1', question: '第一题' }] }); cb.onDone();
+    cb.onUserQuestion!({ turnId: 'turn_mobile_questions', attemptId: 'mobile-attempt', invocationId: 'mobile-attempt:1:1', identityStatus: 'available', step: 1, questions: [{ id: 'q1', question: '第一题' }] }); cb.onDone();
   });
   observeTurn.mockImplementation((_id, cb, options) => new Promise<void>(resolve => {
-    cb.onUserQuestion!({ turnId: 'turn_mobile_questions', step: 2, questions: [{ id: 'q2', question: '第二题' }] });
+    cb.onUserQuestion!({ turnId: 'turn_mobile_questions', attemptId: 'mobile-attempt', invocationId: 'mobile-attempt:2:1', identityStatus: 'available', step: 2, questions: [{ id: 'q2', question: '第二题' }] });
     options!.signal!.addEventListener('abort', () => resolve(), { once: true });
   }));
   const wrapper = await mountSurface('mobile', true);
@@ -1331,6 +1331,10 @@ it('resumes the identified turn after a saved answer when the first question str
   expect(wrapper.find('.pc-stop').exists()).toBe(true);
   wrapper.getComponent({ name: 'UserQuestionComposer' }).vm.$emit('submit', [{ id: 'q2', selected: [], custom: '第二答' }]); await flushPromises();
   expect(submitAnswers).toHaveBeenCalledTimes(2); expect(observeTurn).toHaveBeenCalledTimes(1);
+  expect(submitAnswers).toHaveBeenNthCalledWith(1, 'turn_mobile_questions', [{ id: 'q1', selected: [], custom: '第一答' }], expect.any(AbortSignal),
+    { attemptId: 'mobile-attempt', invocationId: 'mobile-attempt:1:1', step: 1 });
+  expect(submitAnswers).toHaveBeenNthCalledWith(2, 'turn_mobile_questions', [{ id: 'q2', selected: [], custom: '第二答' }], expect.any(AbortSignal),
+    { attemptId: 'mobile-attempt', invocationId: 'mobile-attempt:2:1', step: 2 });
 });
 
 it('does not push a hidden input layer above an open mobile modal when a draft is restored', async () => {

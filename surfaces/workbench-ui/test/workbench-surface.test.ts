@@ -129,7 +129,7 @@ it.each(['standard','companion'])('answers complete questions in %s mode and kee
   localStorage.setItem('aervox-workbench-mode',mode);
   let forward!: import('@aervox/api-client').TurnCallbacks;
   const streamTurn=vi.fn(async (_s,_c,cb,options)=>{
-    forward=cb;await options.onAccepted('turn');cb.onUserQuestion({turnId:'turn',step:1,questions:[
+    forward=cb;await options.onAccepted('turn');cb.onUserQuestion({turnId:'turn',attemptId:'attempt',invocationId:'attempt:1:1',identityStatus:'available',step:1,questions:[
       {id:'topics',question:'选择主题',multiSelect:true,options:[{label:'A'},{label:'B'}]},
       {id:'details',question:'补充要求'},
     ]});cb.onDone();
@@ -142,10 +142,10 @@ it.each(['standard','companion'])('answers complete questions in %s mode and kee
   await vi.waitFor(()=>expect(wrapper.find('.uq-submit-btn').exists()).toBe(true),{timeout:5000});
   await wrapper.findAll('.uq-option-btn')[0]!.trigger('click');await wrapper.findAll('.uq-option-btn')[1]!.trigger('click');
   await wrapper.findAll('.uq-custom-input input')[1]!.setValue('带示例');await wrapper.get('.uq-submit-btn').trigger('click');
-  forward.onUserQuestion!({turnId:'turn',step:2,questions:[{id:'next',question:'新的确认'}]});saved();await flushPromises();
+  forward.onUserQuestion!({turnId:'turn',attemptId:'attempt',invocationId:'attempt:2:1',identityStatus:'available',step:2,questions:[{id:'next',question:'新的确认'}]});saved();await flushPromises();
   expect(submitQuestionAnswers).toHaveBeenCalledWith('turn',[
     {id:'topics',selected:['A','B'],custom:undefined},{id:'details',selected:[],custom:'带示例'},
-  ],expect.any(AbortSignal));
+  ],expect.any(AbortSignal),{attemptId:'attempt',invocationId:'attempt:1:1',step:1});
   expect(wrapper.get('.user-question-card').text()).toContain('新的确认');
   expect(wrapper.get('.user-question-card').text()).not.toContain('选择主题');
 });
