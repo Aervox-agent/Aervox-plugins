@@ -1546,7 +1546,8 @@ onBeforeUnmount(() => {
 .proactive-companion[data-design-system="material3"] .pc-stage { padding-top: 0; }
 .proactive-companion[data-design-system="material3"] .pc-pet-status {
   top: 2px; padding: 2px 10px; border-radius: 999px;
-  background: var(--md-sys-color-surface-container);
+  background: color-mix(in srgb, var(--md-sys-color-surface) 70%, transparent);
+  backdrop-filter: blur(8px);
   font-size: 12px; line-height: 16px; font-weight: 500; letter-spacing: .5px;
 }
 .proactive-companion[data-design-system="material3"] .pc-pet-status::before { background: var(--md-sys-color-outline); }
@@ -1675,31 +1676,38 @@ onBeforeUnmount(() => {
 /* Keep feedback, its action and the editable draft available together above an IME. */
 .proactive-companion[data-design-system="material3"].pc-viewport--short.pc-has-feedback .pc-whisper-input textarea { max-height: 32px; }
 
-/* Solid Material surfaces keep dialogue legible over the character. */
+/* Brand color roles keep the companion glass and native controls consistent. */
 .proactive-companion[data-design-system="material3"] .pc-dialogue-box {
   border-radius: 28px; padding: 18px 20px 14px;
-  background: var(--md-sys-color-surface-container-low);
-  border: 0;
-  box-shadow: none;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.03)),
+    color-mix(in srgb, var(--md-sys-color-surface-container-low) 88%, transparent);
+  backdrop-filter: blur(18px);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  box-shadow: 0 12px 32px -18px rgba(0,0,0,.45);
 }
 .proactive-companion[data-design-system="material3"] .pc-dialogue-text { font-size: 16px; line-height: 24px; }
 .proactive-companion[data-design-system="material3"] .pc-whisper-input {
   border-radius: 28px; padding: 6px 6px 6px 18px;
-  background: var(--md-sys-color-surface-container-high);
-  border: 0;
-  box-shadow: none;
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.03)),
+    color-mix(in srgb, var(--md-sys-color-surface-container-low) 88%, transparent);
+  backdrop-filter: blur(18px);
+  border: 1px solid var(--md-sys-color-outline-variant);
+  box-shadow: 0 12px 32px -18px rgba(0,0,0,.45);
 }
 .proactive-companion[data-design-system="material3"] .pc-whisper-input:focus-within {
   outline: 2px solid var(--md-sys-color-primary);
   outline-offset: 2px;
-  box-shadow: none;
+  box-shadow: 0 12px 32px -18px rgba(0,0,0,.45);
 }
 
 .proactive-companion[data-design-system="material3"] .pc-current-session { margin-block-end: 2px; }
 /* 名牌压在角色身上时保持可读：给一层贴近底色的圆角衬底。 */
 .proactive-companion[data-design-system="material3"] .pc-dialogue-name {
   padding: 3px 10px; border-radius: 999px;
-  background: var(--md-sys-color-surface-container-low);
+  background: color-mix(in srgb, var(--md-sys-color-surface) 72%, transparent);
+  backdrop-filter: blur(8px);
 }
 /* Keep the local configuration action reachable when the IME shortens the
  * viewport. Only its text scrolls; the action remains within the same bubble. */
