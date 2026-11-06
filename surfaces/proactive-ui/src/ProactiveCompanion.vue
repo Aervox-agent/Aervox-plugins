@@ -12,7 +12,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch,
 import { useUISurfaceContext } from '@aervox/ui-host';
 import { useMaterial3 } from '@aervox/ui/material3';
 import { AervoxDialog, ExtensionSlot } from '@aervox/ui/primitives';
-import { AervoxBrandMark, PetWithFallback, UserQuestionComposer, readCompanionIdentity, useSessionDraft } from '@aervox/ui/companion';
+import { AervoxBrandMark, CompanionAvatar, UserQuestionComposer, readCompanionIdentity, useSessionDraft, useCompanionAvatarBinding } from '@aervox/ui/companion';
 import { AervoxHttpError, createConversationController, getClientTransport, useAervoxApi, useAervoxPlugins, useAervoxSessions } from '@aervox/api-client';
 import { createUIRegistry, provideUIRegistry, createWorkbenchPluginRuntime, createPluginEventBus, createPluginStateStore, provideUIPluginContext, resolveOutgoingMessage, type BuiltinUIPlugin, type UIPluginContext } from '@aervox/ui/plugin-api';
 import { ArrowUpRight, BookOpen, Copy, History, Mic, Paperclip, RotateCcw, Settings, Square, Volume2, X } from 'lucide-vue-next';
@@ -40,6 +40,7 @@ const learningOpen = ref(false);
 const diaryOpen = ref(false);
 
 const surface = useUISurfaceContext();
+const avatarBinding = useCompanionAvatarBinding();
 const registry = createUIRegistry();
 provideUIRegistry(registry);
 const pluginEvents = createPluginEventBus();
@@ -910,7 +911,7 @@ onBeforeUnmount(() => {
     <div class="pc-stage">
       <div class="pc-pet-wrap">
         <div class="pc-pet-status">{{ companionStatus }}</div>
-        <PetWithFallback :show-fallback-while-loading="material3" />
+        <CompanionAvatar :model="avatarBinding.model.value" :binding-state="avatarBinding.state.value" @retry-binding="avatarBinding.refresh" />
       </div>
     </div>
 
@@ -1287,6 +1288,7 @@ onBeforeUnmount(() => {
     margin-block-start: 0;
   }
 }
+.pc-pet-wrap :deep(.aervox-companion-avatar),
 .pc-pet-wrap :deep(.aervox-live2d-pet) { min-height: 0; }
 .pc-pet-wrap :deep(.aervox-live2d-pet__canvas) { inset: 0; }
 .pc-pet-status {

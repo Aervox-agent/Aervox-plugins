@@ -79,9 +79,11 @@ html, body, #pet-app {
     cursor: pointer
 }
 
-.pet-character .live2d-pet {
+.pet-character .aervox-companion-avatar,
+.pet-character .aervox-live2d-pet {
     width: 100%;
-    height: 100%
+    height: 100%;
+    min-height: 0
 }
 
 /* ---------- 顶部对话气泡：最小液态玻璃 + 尾巴 ---------- */

@@ -610,7 +610,7 @@ it('uses the host-provided default-surface command without knowing its ID or URL
     props: {plugin: definition, surface: 'main', platform: 'web', viewProps: {surfaceNavigation: {
       currentId: 'custom-companion', options: [{value: 'custom-main', label: '主界面'}], select: vi.fn(), openDefault,
     }}},
-    global: {stubs: {PetWithFallback: true}},
+    global: {stubs: {CompanionAvatar: true}},
   });
   await vi.waitFor(() => expect(wrapper.find('.pc-quiet-btn').exists()).toBe(true));
   await wrapper.get('[aria-label="回到完整工作台"]').trigger('click');

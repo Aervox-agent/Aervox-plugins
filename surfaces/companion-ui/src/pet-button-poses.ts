@@ -2,7 +2,7 @@
  * Aervox 桌宠 dock 按钮 — Live2D 独立动作 + 表情响应
  *
  * 每个按钮绑定互不重叠的姿态配对池（motion + expression 预搭配），
- * 点击时随机取用避免连续点击动作重复；无 Live2D 桥（PetHero 回退）时由
+ * 点击时随机取用避免连续点击动作重复；Live2D 桥尚未就绪时由
  * 调用方 optional-chain 静默跳过。
  */
 import {MizukiExpression, MizukiMotion} from '@aervox/ui/live2d/model'
