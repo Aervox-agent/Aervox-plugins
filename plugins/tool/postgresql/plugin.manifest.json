@@ -1,0 +1,21 @@
+{
+  "apiVersion": "aervox.dev/v1",
+  "kind": "PluginManifest",
+  "requires": {
+    "hostApiVersion": { "min": "1.2.0", "maxExclusive": "2.0.0" }
+  },
+  "metadata": {
+    "id": "ap-tool-postgresql",
+    "displayName": "PostgreSQL 数据库",
+    "publisher": "aervox-official",
+    "version": "1.0.0",
+    "description": "可选 PostgreSQL 主库配置与迁移入口；SQLite 保持默认，数据库连接、数据和切换由宿主管理。",
+    "license": "AGPL-3.0-or-later",
+    "category": "tool",
+    "tags": ["database", "postgresql"],
+    "targets": ["desktop", "web", "cli"],
+    "installation": "optional",
+    "breaking": false
+  },
+  "spec": {}
+}

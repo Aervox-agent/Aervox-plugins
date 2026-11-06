@@ -29,6 +29,9 @@ export async function verifyReleaseAssets(release, archive, checksumText) {
     || contracts.comparePluginVersions(manifest.requires?.hostApiVersion.min ?? '1.0.0', '1.1.0') === -1) {
     throw new Error('Published ecosystem bundle requires its primary category and Host API >=1.1.0');
   }
+  if (manifest.metadata.installation !== undefined && contracts.comparePluginVersions(manifest.requires?.hostApiVersion.min ?? '1.0.0', '1.2.0') === -1) {
+    throw new Error('Published installation policy requires Host API >=1.2.0');
+  }
   const downloadUrl = `https://github.com/${REPOSITORY}/releases/download/${encodeURIComponent(release.tag_name)}/${filename}`;
   const actualUrl = new URL(asset.browser_download_url);
   if (actualUrl.origin !== 'https://github.com' || actualUrl.username || actualUrl.password || actualUrl.search || actualUrl.hash
