@@ -1,8 +1,10 @@
 # 多风格日记与认知复盘
 
-`ap-workflow-diary-distillers`，主分类 `workflow`。版本 `1.0.0`。
+`ap-workflow-diary-distillers`，主分类 `workflow`。版本 `1.1.0`。
 
-CAP-008 / CAP-017: 扩展 Aervox 每日记忆日记提炼风格，支持「认知与学习复盘（growth）」、「极简量化记录（concise）」与「桌宠随笔（companion）」风格定制。
+CAP-008 / CAP-017: `diary_list_styles` 已接入受信宿主运行时，返回真实风格清单与应用场景；需要 `diary.read` 授权，不依赖模型或配置，不读取记忆、日记正文或模板提示词。
+
+`diary_generate_styled` 仍只有声明，当前没有执行 handler。生成可使用宿主已有 `styleId` 入口；配置默认值不会因安装而自动接入 Worker，清单查询也不构成生成完成。
 
 ## 安装与配置
 
@@ -11,6 +13,8 @@ CAP-008 / CAP-017: 扩展 Aervox 每日记忆日记提炼风格，支持「认�
 ## 数据与隐私
 
 配置、凭据、权限、业务数据由宿主管理；安装声明不等于外部服务已连接。外部连接仅在用户配置和授权后由对应宿主能力执行，缺包不删除数据，恢复代码不恢复已撤销授权。具体能力和已验证范围见宿主合同及测试。
+
+当前执行代码要求同版 `1.1.0` Manifest 和宿主可选 catalog 端口；旧宿主缺端口时不贡献工具，停用、换版、缺包或撤权均拒绝调用。desktop/web/cli 声明不代表 mobile 已接入。
 
 ## 开发与许可
 

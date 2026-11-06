@@ -5,8 +5,8 @@
     "id": "ap-workflow-diary-distillers",
     "displayName": "多风格日记与认知复盘",
     "publisher": "aervox-official",
-    "version": "1.0.1",
-    "description": "CAP-008 / CAP-017: 扩展 Aervox 每日记忆日记提炼风格，支持「认知与学习复盘（growth）」、「极简量化记录（concise）」与「桌宠随笔（companion）」风格定制。",
+    "version": "1.1.0",
+    "description": "CAP-008 / CAP-017: 查询宿主真实日记风格与应用场景；生成使用宿主已有 styleId 入口，声明的生成工具尚未接线。",
     "license": "AGPL-3.0-or-later",
     "category": "workflow",
     "tags": [
