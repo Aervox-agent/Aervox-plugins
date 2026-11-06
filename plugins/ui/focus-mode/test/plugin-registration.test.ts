@@ -15,6 +15,7 @@ import focusModePluginDefinition, {
   FocusSettingsRow,
   FocusModeIndicator,
   LearningDrawer,
+  FocusCompanionLearning,
 } from '../src/ui';
 import { useFocusModeState } from '../src/ui';
 
@@ -50,6 +51,7 @@ describe('FocusModePlugin（CR-060 无别名单一 id）', () => {
     expect(FocusSettingsRow).toBeDefined();
     expect(FocusModeIndicator).toBeDefined();
     expect(LearningDrawer).toBeDefined();
+    expect(FocusCompanionLearning).toBeDefined();
     expect(registerFocusModePlugin).toBeDefined();
     expect(focusModePluginDefinition.id).toBe('ap-ui-focus-mode');
   });
@@ -64,6 +66,8 @@ describe('FocusModePlugin（CR-060 无别名单一 id）', () => {
     expect(registry.getSlotComponents('conversation:bottom').find((i) => i.id === 'focus-mode:terms-bar')?.component).toBe(FocusTermsBar);
     expect(registry.getSlotComponents('nav:menu-items').find((i) => i.id === 'focus-mode:nav-menu-item')?.component).toBe(FocusNavMenuItem);
     expect(registry.getSlotComponents('workbench:drawers').find((i) => i.id === 'focus-mode:learning-drawer')?.component).toBe(LearningDrawer);
+    expect(registry.getSlotComponents('companion:cards').find((i) => i.id === 'focus-mode:companion-learning')?.component).toBe(FocusCompanionLearning);
+    expect(registry.getSlotComponents('companion:drawers').find((i) => i.id === 'focus-mode:companion-learning-drawer')?.component).toBe(LearningDrawer);
     expect(registry.getSlotComponents('taskcenter:cards').find((i) => i.id === 'focus-mode:task-card')?.component).toBe(FocusTaskCenterCard);
     // CR-060：宿主设置面板与输入区只提供通用插槽，插件行/标记由插件注册
     expect(registry.getSlotComponents('settings:conversation-rows').find((i) => i.id === 'focus-mode:settings-row')?.component).toBe(FocusSettingsRow);
@@ -77,6 +81,8 @@ describe('FocusModePlugin（CR-060 无别名单一 id）', () => {
     expect(registry.getSlotComponents('settings:conversation-rows')).toHaveLength(0);
     expect(registry.getSlotComponents('composer:indicator')).toHaveLength(0);
     expect(registry.getSlotComponents('workbench:drawers')).toHaveLength(0);
+    expect(registry.getSlotComponents('companion:cards')).toHaveLength(0);
+    expect(registry.getSlotComponents('companion:drawers')).toHaveLength(0);
     expect(registry.getCards()).toHaveLength(0);
   });
 
@@ -177,6 +183,28 @@ describe('FocusModePlugin（CR-060 无别名单一 id）', () => {
 
 describe('WorkbenchPluginRuntime（CR-060：不内建插件、fail-closed）', () => {
   const definitions: BuiltinUIPlugin[] = [focusModePluginDefinition];
+
+  it('activates companion learning without workbench presentation capabilities and removes its entries when disabled', async () => {
+    const context = createContext() as UIPluginContext;
+    context.navigation = { runMenuAction: action => action() } as UIPluginContext['navigation'];
+    const registry = createUIRegistry();
+    const runtime = createWorkbenchPluginRuntime(registry, () => context, definitions, { surfaceKind: 'companion' });
+    try {
+      await runtime.sync([{ id: 'ap-ui-focus-mode', enabled: 1 }], async () => ({ values: { autoEnableFocusMode: true } }));
+      expect(runtime.isPluginAvailable('ap-ui-focus-mode')).toBe(true);
+      expect(context.navigation).not.toHaveProperty('setQuietStartup');
+      expect(context.cards).not.toHaveProperty('acquireSlotPreset');
+      expect(registry.getSlotComponents('companion:cards')[0]?.component).toBe(FocusCompanionLearning);
+      expect(registry.getSlotComponents('companion:drawers')[0]?.component).toBe(LearningDrawer);
+      expect(registry.transformMessage('继续学习').metadata).toEqual({ mode: 'focus' });
+      await runtime.sync([{ id: 'ap-ui-focus-mode', enabled: 0 }], async () => ({ values: {} }));
+      expect(registry.getSlotComponents('companion:cards')).toEqual([]);
+      expect(registry.getSlotComponents('companion:drawers')).toEqual([]);
+    } finally {
+      runtime.destroy();
+      context.pluginState.dispose();
+    }
+  });
 
   it('运行时卡片动作与控件上下文共享抽屉状态，关闭窗口保留模式偏好', async () => {
     // 本文件为 Node 环境；显式提供存储，验证新工作台从持久化偏好恢复。

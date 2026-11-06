@@ -4,11 +4,13 @@ import { UISurfaceHost } from '@aervox/ui-host';
 import { AervoxHttpError, configureAervoxClient, setSessionId, type StreamTurnOptions, type TurnCallbacks } from '@aervox/api-client';
 import definition from '../src';
 import { material3ContextKey } from '@aervox/ui/material3';
-import { defineComponent } from 'vue';
+import { defineComponent, h, ref, onBeforeUnmount, type Component } from 'vue';
+import { AervoxDialog } from '@aervox/ui/primitives';
 import { useUIPluginContext, type BuiltinUIPlugin, type UIPluginContext } from '@aervox/ui/plugin-api';
 import MobileSettingsDialog from '../src/MobileSettingsDialog.vue';
 import MobileSessionsDialog from '../src/MobileSessionsDialog.vue';
 import MobileHistoryDialog from '../src/MobileHistoryDialog.vue';
+import DiaryView from '../src/DiaryView.vue';
 
 enableAutoUnmount(afterEach);
 afterEach(() => { vi.unstubAllGlobals(); });
@@ -26,8 +28,8 @@ const recentSession = {
 const streamTurn = vi.fn();
 const observeTurn = vi.fn();
 const requestImplementation = async (method: string, path: string) => {
-  if (path === '/v1/sessions' && method === 'GET') return { items: [recentSession] };
-  if (path === '/v1/sessions' && method === 'POST') return { id: 'ses_new', title: '新对话', createdAt: '', updatedAt: '' };
+  if (path.split('?')[0] === '/v1/sessions' && method === 'GET') return { items: [recentSession] };
+  if (path.split('?')[0] === '/v1/sessions' && method === 'POST') return { id: 'ses_new', title: '新对话', createdAt: '', updatedAt: '' };
   return { items: [] };
 };
 const request = vi.fn(requestImplementation);
@@ -36,7 +38,8 @@ beforeEach(() => {
   localStorage.clear();
   streamTurn.mockReset();
   observeTurn.mockReset();
-  streamTurn.mockImplementation(async (_sessionId: string, _content: string, callbacks: { onDelta: (t: string) => void; onDone: () => void }) => {
+  streamTurn.mockImplementation(async (_sessionId: string, _content: string, callbacks: { onDelta: (t: string) => void; onDone: () => void }, options: StreamTurnOptions) => {
+    await options.onAccepted?.('turn_default');
     callbacks.onDelta('我们接着昨天的进度。');
     callbacks.onDone();
   });
@@ -55,17 +58,24 @@ beforeEach(() => {
   });
 });
 
-async function mountSurface(platform: 'web' | 'desktop' | 'mobile' = 'web', material3 = false, sessionId = material3 ? recentSession.id : undefined, back?: unknown, pluginsOrNative: BuiltinUIPlugin[] | boolean = [], draftStorage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>) {
+async function mountSurface(platform: 'web' | 'desktop' | 'mobile' = 'web', material3 = false, sessionId: string | undefined = undefined, back?: unknown, pluginsOrNative: BuiltinUIPlugin[] | boolean = [], draftStorage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>, learningPanel?: Component) {
   const nativeRuntime = pluginsOrNative === true;
   const plugins = Array.isArray(pluginsOrNative) ? pluginsOrNative : [];
   if (sessionId) setSessionId(sessionId);
+  else if (!localStorage.getItem('aervox_active_session_id')) setSessionId(recentSession.id);
   const wrapper = mount(UISurfaceHost, {
-    props: { plugin: definition, surface: 'main', platform, viewProps: {plugins, nativeRuntime, draftStorage, surfaceNavigation: {currentId: definition.id, options: [], select: vi.fn(), openDefault: vi.fn()}} },
+    props: { plugin: definition, surface: 'main', platform, viewProps: {plugins, nativeRuntime, draftStorage, learningPanel, surfaceNavigation: {currentId: definition.id, options: [], select: vi.fn(), openDefault: vi.fn()}} },
     global: { provide: { [material3ContextKey as symbol]: material3, ...(back ? { [Symbol.for('aervox.material3.mobileBack')]: back } : {}) } },
   });
   await vi.waitFor(() => expect(wrapper.find('.proactive-companion').exists()).toBe(true), { timeout: 5000 });
   await flushPromises();
   return wrapper;
+}
+
+async function sendFromInput(wrapper: Awaited<ReturnType<typeof mountSurface>>, text = '帮我梳理学习进度。') {
+  await wrapper.get('.pc-whisper-input input, .pc-whisper-input textarea').setValue(text);
+  const submit = wrapper.findAll('.pc-whisper-input button, .pc-whisper-input md-filled-button').find(button => button.text() === '发送');
+  if (submit) await submit.trigger('click');
 }
 
 it('hosts companion contributions in the existing conversation and removes them when disabled', async () => {
@@ -85,15 +95,17 @@ it('hosts companion contributions in the existing conversation and removes them 
     return requestImplementation(method, path);
   });
   const wrapper = await mountSurface('mobile', false, undefined, undefined, [plugin, { id: 'workbench-only', setup: workbenchSetup }]);
-  expect(wrapper.find('.probe-companion-card').exists()).toBe(true);
+  await wrapper.findAll('.pc-home-entry').find(button => button.text().startsWith('今日'))!.trigger('click');
+  await flushPromises();
+  expect(wrapper.findComponent(Widget).exists()).toBe(true);
   expect(workbenchSetup).not.toHaveBeenCalled();
-  await wrapper.find('.probe-companion-card').trigger('click');
+  await wrapper.getComponent(Widget).trigger('click');
   await flushPromises();
   expect(streamTurn).toHaveBeenCalledTimes(1);
   expect(streamTurn.mock.calls[0]![3].metadata.scene).toBe('campus');
   enabled = false;
   await context.refreshPluginUI();
-  expect(wrapper.find('.probe-companion-card').exists()).toBe(false);
+  expect(wrapper.findComponent(Widget).exists()).toBe(false);
 });
 
 it('restores the saved dark theme without mounting the desktop workbench', async () => {
@@ -113,7 +125,7 @@ it('preserves the desktop host theme when the mobile surface is explicitly selec
 it('retries an uncertain desktop submission with the same business idempotency key', async () => {
   streamTurn.mockRejectedValueOnce(new Error('acceptance response lost'));
   const wrapper = await mountSurface('desktop');
-  await wrapper.findAll('.pc-choice')[1]!.trigger('click');
+  await sendFromInput(wrapper);
   await flushPromises();
   expect(wrapper.find('.pc-retry').exists()).toBe(true);
   await wrapper.find('.pc-retry').trigger('click');
@@ -122,41 +134,56 @@ it('retries an uncertain desktop submission with the same business idempotency k
   expect(streamTurn.mock.calls[1]![3].idempotencyKey).toBe(streamTurn.mock.calls[0]![3].idempotencyKey);
 });
 
+it('does not move an unknown submission to an externally selected owner', async () => {
+  streamTurn.mockRejectedValueOnce(new TypeError('acceptance unknown'));
+  const wrapper = await mountSurface('desktop');
+  await sendFromInput(wrapper, '原会话的未确认消息'); await flushPromises();
+  const pendingKey = streamTurn.mock.calls[0]![3].idempotencyKey;
+  setSessionId('externally_selected'); await flushPromises();
+  await wrapper.get('.pc-retry').trigger('click'); await flushPromises();
+  expect(streamTurn).toHaveBeenCalledOnce();
+  expect(wrapper.get('.pc-mobile-session-feedback').text()).toContain('回到原会话后恢复');
+  setSessionId(recentSession.id); await flushPromises();
+  await wrapper.get('.pc-retry').trigger('click'); await flushPromises();
+  expect(streamTurn.mock.calls[1]![0]).toBe(recentSession.id);
+  expect(streamTurn.mock.calls[1]![3].idempotencyKey).toBe(pendingKey);
+});
+
 it('loads through the host and renders the minimal first-level page', async () => {
   const wrapper = await mountSurface();
   expect(wrapper.find('.pc-dialogue-box').exists()).toBe(true);
-  expect(wrapper.findAll('.pc-choice')).toHaveLength(2);
-  expect(wrapper.find('.pc-whisper-pill').exists()).toBe(true);
+  expect(wrapper.findAll('.pc-home-nav .pc-home-entry')).toHaveLength(4);
+  expect(wrapper.find('.pc-whisper-pill').exists()).toBe(false);
   // 输入框默认不可见——淡化输入存在感
-  expect(wrapper.find('.pc-whisper-input').exists()).toBe(false);
+  expect(wrapper.find('.pc-whisper-input').exists()).toBe(true);
   expect(wrapper.find('.pc-brand .aervox-brand-mark').exists()).toBe(true);
   expect(wrapper.findAll('.pc-quiet-btn svg')).toHaveLength(2);
-  expect(wrapper.find('.pc-whisper-pill svg').exists()).toBe(true);
+  expect(wrapper.find('.pc-whisper-input input').exists()).toBe(true);
 });
 
-it('resume card reflects the most recent session and switches to it', async () => {
+it('resume entry opens saved history without dispatching a Turn', async () => {
   const wrapper = await mountSurface();
-  const resume = wrapper.findAll('.pc-choice')[0]!;
+  const resume = wrapper.get('.pc-home-nav .pc-home-entry');
   expect(resume.text()).toContain('死锁复习');
   expect(resume.text()).toContain('昨天');
   await resume.trigger('click');
   expect(localStorage.getItem('aervox_active_session_id')).toBe('ses_recent');
-  await vi.waitFor(() => expect(wrapper.find('.pc-dialogue-text').text()).toContain('接着上次的地方继续'), { timeout: 2000 });
+  expect(wrapper.getComponent(MobileHistoryDialog).props('sessionId')).toBe('ses_recent');
+  expect(streamTurn).not.toHaveBeenCalled();
 });
 
-it('focus card sends a real turn and streams the reply into the dialogue box', async () => {
+it('persistent input sends a real turn and streams the reply into the dialogue box', async () => {
   const wrapper = await mountSurface();
-  const focus = wrapper.findAll('.pc-choice').find((c) => c.text().includes('专注'))!;
-  await focus.trigger('click');
+  await sendFromInput(wrapper);
   await flushPromises();
   expect(streamTurn).toHaveBeenCalledOnce();
-  expect(String(streamTurn.mock.calls[0]![1])).toContain('专注');
+  expect(String(streamTurn.mock.calls[0]![1])).toBe('帮我梳理学习进度。');
   expect(wrapper.find('.pc-dialogue-text').text()).toContain('我们接着昨天的进度');
 });
 
-it('whisper input replaces the choices while open and sends on Enter', async () => {
+it('persistent input keeps navigation available and sends on Enter', async () => {
   const wrapper = await mountSurface();
-  await wrapper.find('.pc-whisper-pill').trigger('click');
+  await wrapper.get('.pc-whisper-input input, .pc-whisper-input textarea').trigger('focus');
   expect(wrapper.find('.pc-whisper-input').exists()).toBe(true);
   await wrapper.find('.pc-whisper-input input').setValue('讲讲环路等待');
   await wrapper.find('.pc-whisper-input input').trigger('keydown', { key: 'Enter' });
@@ -164,17 +191,16 @@ it('whisper input replaces the choices while open and sends on Enter', async () 
   expect(streamTurn).toHaveBeenCalledOnce();
   expect(String(streamTurn.mock.calls[0]![1])).toBe('讲讲环路等待');
   // 发送后回到卡片主导
-  expect(wrapper.find('.pc-whisper-input').exists()).toBe(false);
+  expect(wrapper.find('.pc-whisper-input').exists()).toBe(true);
 });
 
 
 it('reuses the idempotency key on an explicit retry when turn acceptance is unknown', async () => {
   streamTurn.mockRejectedValueOnce(new Error('connection lost'));
   const wrapper = await mountSurface();
-  const focus = wrapper.findAll('.pc-choice').find(c => c.text().includes('专注'))!;
-  await focus.trigger('click');
+  await sendFromInput(wrapper);
   await flushPromises();
-  expect(focus.attributes('disabled')).toBeUndefined();
+  expect(wrapper.getComponent(MobileSessionsDialog).props('switchLocked')).toBe(true);
   expect(wrapper.find('.pc-feedback').text()).toContain('未能收到回复');
   expect(wrapper.get('.pc-feedback').element.closest('.pc-dialogue')).not.toBeNull();
   expect(wrapper.find('.pc-mobile-feedback').exists()).toBe(false);
@@ -192,12 +218,12 @@ it('reuses the idempotency key on an explicit retry when turn acceptance is unkn
 });
 
 it('creates a real session before the first turn when the session list is empty', async () => {
-  request.mockImplementation(async (method, path) => path === '/v1/sessions' && method === 'GET'
+  request.mockImplementation(async (method, path) => path.split('?')[0] === '/v1/sessions' && method === 'GET'
     ? { items: [] } : requestImplementation(method, path));
-  const wrapper = await mountSurface();
-  await wrapper.findAll('.pc-choice')[0]!.trigger('click');
+  const wrapper = await mountSurface('web', false, 'web_default');
+  await sendFromInput(wrapper);
   await flushPromises();
-  expect(request.mock.calls.some(([method, path]) => method === 'POST' && path === '/v1/sessions')).toBe(true);
+  expect(request.mock.calls.some(([method, path]) => method === 'POST' && path.split('?')[0] === '/v1/sessions')).toBe(true);
   expect(streamTurn.mock.calls[0]![0]).toBe('ses_new');
 });
 
@@ -205,7 +231,7 @@ it('sends configured companion identity with the active session', async () => {
   localStorage.setItem('aervox-settings', JSON.stringify({ companionName: '团子', userAddress: '掌柜' }));
   const wrapper = await mountSurface();
   expect(wrapper.find('.pc-dialogue-name').text()).toBe('团子');
-  await wrapper.findAll('.pc-choice')[1]!.trigger('click');
+  await sendFromInput(wrapper);
   await flushPromises();
   expect(streamTurn.mock.calls[0]![0]).toBe('ses_recent');
   expect(streamTurn.mock.calls[0]![3]).toMatchObject({
@@ -231,7 +257,7 @@ function pendingStream() {
 it('shows waiting feedback before the first delta and then displays the streamed reply', async () => {
   const pending = pendingStream();
   const wrapper = await mountSurface();
-  await wrapper.findAll('.pc-choice')[1]!.trigger('click');
+  await sendFromInput(wrapper);
   await flushPromises();
   expect(wrapper.find('.pc-dialogue-waiting').text()).toContain('正在等待回复');
   expect(wrapper.find('.pc-dialogue-waiting').attributes('role')).toBe('status');
@@ -246,11 +272,11 @@ it('shows waiting feedback before the first delta and then displays the streamed
 
 it('preserves the previous dialogue when a request fails before the first delta', async () => {
   const wrapper = await mountSurface();
-  await wrapper.findAll('.pc-choice')[1]!.trigger('click');
+  await sendFromInput(wrapper);
   await flushPromises();
   const previousReply = wrapper.find('.pc-dialogue-text').text();
   streamTurn.mockRejectedValueOnce(new Error('provider diagnostic'));
-  await wrapper.findAll('.pc-choice')[1]!.trigger('click');
+  await sendFromInput(wrapper);
   await flushPromises();
   expect(wrapper.find('.pc-dialogue-text').text()).toBe(previousReply);
   expect(wrapper.find('.pc-feedback').attributes('data-kind')).toBe('connection-error');
@@ -263,7 +289,7 @@ it('keeps a partial reply visible and reports a lost connection outside the dial
     throw new Error('connection lost');
   });
   const wrapper = await mountSurface();
-  await wrapper.findAll('.pc-choice')[1]!.trigger('click');
+  await sendFromInput(wrapper);
   await flushPromises();
   expect(wrapper.find('.pc-dialogue-text').text()).toBe('我收到你的问题了。');
   expect(wrapper.find('.pc-feedback').text()).toContain('已保留收到的回复');
@@ -278,7 +304,7 @@ it('resumes an accepted partial reply in place without sending another turn', as
     throw new Error('observer connection lost');
   });
   const wrapper = await mountSurface();
-  await wrapper.findAll('.pc-choice')[1]!.trigger('click');
+  await sendFromInput(wrapper);
   await flushPromises();
   expect(wrapper.find('.pc-dialogue-text').text()).toBe('我收到你的问题了。');
   expect(wrapper.find('.pc-feedback').text()).toContain('连接中断，已保留收到的回复。可恢复接收。');
@@ -296,14 +322,14 @@ it('resumes an accepted partial reply in place without sending another turn', as
 
 it('does not offer resend after a stream identifies a turn and disconnects before any reply', async () => {
   const wrapper = await mountSurface();
-  await wrapper.findAll('.pc-choice')[1]!.trigger('click');
+  await sendFromInput(wrapper);
   await flushPromises();
   const previousReply = wrapper.find('.pc-dialogue-text').text();
   streamTurn.mockImplementationOnce(async (_id: string, _text: string, callbacks: TurnCallbacks) => {
     callbacks.onTurnIdentified!('turn_identified');
     throw new Error('observer connection lost');
   });
-  await wrapper.findAll('.pc-choice')[1]!.trigger('click');
+  await sendFromInput(wrapper);
   await flushPromises();
   expect(wrapper.find('.pc-dialogue-text').text()).toBe(previousReply);
   expect(wrapper.find('.pc-retry').exists()).toBe(false);
@@ -317,7 +343,7 @@ it('uses a new key to resend after a terminal turn error', async () => {
     callbacks.onError!(new Error('terminal turn error'));
   });
   const wrapper = await mountSurface();
-  await wrapper.findAll('.pc-choice')[1]!.trigger('click');
+  await sendFromInput(wrapper);
   await flushPromises();
   expect(wrapper.find('.pc-workbench-link').exists()).toBe(false);
   await wrapper.find('.pc-retry').trigger('click');
@@ -326,51 +352,83 @@ it('uses a new key to resend after a terminal turn error', async () => {
   expect(streamTurn.mock.calls[1]![3].idempotencyKey).not.toBe(streamTurn.mock.calls[0]![3].idempotencyKey);
 });
 
-it('uses a new idempotency key for a new action instead of the retry control', async () => {
-  streamTurn.mockRejectedValueOnce(new Error('connection lost'));
-  const wrapper = await mountSurface();
-  await wrapper.findAll('.pc-choice')[1]!.trigger('click');
-  await flushPromises();
-  await wrapper.findAll('.pc-choice')[1]!.trigger('click');
-  await flushPromises();
-  expect(streamTurn).toHaveBeenCalledTimes(2);
-  expect(streamTurn.mock.calls[1]![3].idempotencyKey).not.toBe(streamTurn.mock.calls[0]![3].idempotencyKey);
+it('clears the retained attachment after an explicitly retried terminal refusal is accepted', async () => {
+  localStorage.setItem('aervox-mobile-draft:attachment-ses_recent', JSON.stringify({ name: 'terminal.txt', text: '明确重试的附件正文' }));
+  streamTurn.mockRejectedValueOnce(new AervoxHttpError(400, '/v1/turns', { code: 'BAD_REQUEST' }));
+  const wrapper = await mountSurface('desktop');
+  await sendFromInput(wrapper, '明确重试的文字'); await flushPromises();
+  const firstPayload = streamTurn.mock.calls[0]![1], firstKey = streamTurn.mock.calls[0]![3].idempotencyKey;
+  expect(wrapper.get('.pc-attachment-chip').text()).toContain('terminal.txt');
+  await wrapper.get('.pc-retry').trigger('click'); await flushPromises();
+  expect(streamTurn.mock.calls[1]![1]).toBe(firstPayload);
+  expect(streamTurn.mock.calls[1]![3].idempotencyKey).not.toBe(firstKey);
+  expect(wrapper.find('.pc-attachment-chip').exists()).toBe(false);
+  expect(localStorage.getItem('aervox-mobile-draft:attachment-ses_recent')).toBeNull();
 });
 
-it('detaches an uncertain reservation on session switch and uses a new key for the next action', async () => {
-  const otherSession = { ...recentSession, id: 'ses_other', title: '另一个话题' };
-  localStorage.setItem('aervox_active_session_id', otherSession.id);
-  request.mockImplementation(async (method, path) => path === '/v1/sessions' && method === 'GET'
-    ? { items: [recentSession, otherSession] } : requestImplementation(method, path));
-  streamTurn.mockRejectedValueOnce(new Error('connection lost'));
-  const wrapper = await mountSurface();
-  await wrapper.findAll('.pc-choice')[1]!.trigger('click');
-  await flushPromises();
-  expect(streamTurn.mock.calls[0]![0]).toBe('ses_other');
-  await wrapper.findAll('.pc-choice')[0]!.trigger('click');
-  expect(wrapper.find('.pc-retry').exists()).toBe(false);
-  await wrapper.findAll('.pc-choice')[1]!.trigger('click');
-  await flushPromises();
-  expect(streamTurn.mock.calls[1]![0]).toBe('ses_recent');
-  expect(streamTurn.mock.calls[1]![3].idempotencyKey).not.toBe(streamTurn.mock.calls[0]![3].idempotencyKey);
+it.each(['下一轮的新草稿', '原请求文字'])('retains an edited draft in storage and after remount when a definite refusal is retried: %s', async nextDraft => {
+  streamTurn.mockRejectedValueOnce(new AervoxHttpError(400, '/v1/turns', { code: 'BAD_REQUEST' }));
+  const wrapper = await mountSurface('desktop');
+  await sendFromInput(wrapper, '原请求文字'); await flushPromises();
+  const firstKey = streamTurn.mock.calls[0]![3].idempotencyKey;
+  const input = wrapper.get('.pc-whisper-input input');
+  await input.setValue('编辑过程中的新文字'); await input.setValue(nextDraft);
+  expect(localStorage.getItem('aervox-mobile-draft:ses_recent')).toBe(nextDraft);
+  await wrapper.get('.pc-retry').trigger('click'); await flushPromises();
+  expect(streamTurn.mock.calls[1]![1]).toBe('原请求文字');
+  expect(streamTurn.mock.calls[1]![3].idempotencyKey).not.toBe(firstKey);
+  expect((input.element as HTMLInputElement).value).toBe(nextDraft);
+  expect(localStorage.getItem('aervox-mobile-draft:ses_recent')).toBe(nextDraft);
+  wrapper.unmount();
+  const reopened = await mountSurface('desktop');
+  expect((reopened.get('.pc-whisper-input input').element as HTMLInputElement).value).toBe(nextDraft);
 });
 
-it('keeps IME Enter local, focuses input, and removes suggestions while composing', async () => {
+it('requires recovery of an unknown request before a replacement action', async () => {
+  streamTurn.mockRejectedValueOnce(new Error('unknown'));
   const wrapper = await mountSurface();
-  await wrapper.find('.pc-whisper-pill').trigger('click');
-  expect(wrapper.findAll('.pc-choice')).toHaveLength(0);
+  await sendFromInput(wrapper); await flushPromises();
+  await sendFromInput(wrapper, '另一个目标'); await flushPromises();
+  expect(streamTurn).toHaveBeenCalledOnce();
+  expect(wrapper.getComponent(MobileSessionsDialog).props('switchLocked')).toBe(true);
+  await wrapper.get('.pc-retry').trigger('click'); await flushPromises();
+  expect(streamTurn.mock.calls[1]![1]).toBe('帮我梳理学习进度。');
+  expect(streamTurn.mock.calls[1]![3].idempotencyKey).toBe(streamTurn.mock.calls[0]![3].idempotencyKey);
+  await sendFromInput(wrapper, '另一个目标'); await flushPromises();
+  expect(streamTurn.mock.calls[2]![3].idempotencyKey).not.toBe(streamTurn.mock.calls[0]![3].idempotencyKey);
+});
+it('keeps an uncertain reservation while browsing records in another session', async () => {
+  const other = { ...recentSession, id: 'ses_other', title: '另一个话题' };
+  localStorage.setItem('aervox_active_session_id', other.id);
+  request.mockImplementation(async (method, path) => path.split('?')[0] === '/v1/sessions' && method === 'GET'
+    ? { items: [recentSession, other] } : requestImplementation(method, path));
+  streamTurn.mockRejectedValueOnce(new Error('connection lost'));
+  const wrapper = await mountSurface();
+  await sendFromInput(wrapper); await flushPromises();
+  wrapper.getComponent(MobileSessionsDialog).vm.$emit('history', recentSession); await flushPromises();
+  expect(localStorage.getItem('aervox_active_session_id')).toBe('ses_other');
+  expect(wrapper.find('.pc-retry').exists()).toBe(true);
+  await wrapper.get('.pc-retry').trigger('click'); await flushPromises();
+  expect(streamTurn.mock.calls[1]![0]).toBe('ses_other');
+  expect(streamTurn.mock.calls[1]![3].idempotencyKey).toBe(streamTurn.mock.calls[0]![3].idempotencyKey);
+});
+
+it('keeps IME Enter local and retains persistent input and navigation', async () => {
+  const wrapper = await mountSurface();
+  await wrapper.get('.pc-whisper-input input, .pc-whisper-input textarea').trigger('focus');
+  expect(wrapper.findAll('.pc-home-nav .pc-home-entry')).toHaveLength(4);
   const input = wrapper.find('.pc-whisper-input input');
   await input.setValue('学习');
   await input.trigger('keydown', { key: 'Enter', isComposing: true });
   expect(streamTurn).not.toHaveBeenCalled();
   await input.trigger('keydown', { key: 'Escape' });
-  expect(wrapper.find('.pc-whisper-pill').exists()).toBe(true);
+  expect(wrapper.find('.pc-whisper-pill').exists()).toBe(false);
 });
 
 it('sends a server cancellation before aborting the current reply', async () => {
   const pending = pendingStream();
   const wrapper = await mountSurface();
-  await wrapper.findAll('.pc-choice')[1]!.trigger('click');
+  await sendFromInput(wrapper);
   await flushPromises();
   await pending.options.onAccepted!('turn_1');
   await wrapper.find('.pc-stop').trigger('click');
@@ -384,7 +442,7 @@ it('sends a server cancellation before aborting the current reply', async () => 
 it('remembers a stop requested before acceptance and cancels the accepted turn', async () => {
   const pending = pendingStream();
   const wrapper = await mountSurface();
-  await wrapper.findAll('.pc-choice')[1]!.trigger('click');
+  await sendFromInput(wrapper);
   await flushPromises();
   await wrapper.find('.pc-stop').trigger('click');
   expect(request.mock.calls.some(([, path]) => path.endsWith('/cancel'))).toBe(false);
@@ -402,7 +460,7 @@ it('keeps the stream active after cancel failure and lets the user retry', async
     return requestImplementation(method, path);
   });
   const wrapper = await mountSurface();
-  await wrapper.findAll('.pc-choice')[1]!.trigger('click');
+  await sendFromInput(wrapper);
   await flushPromises();
   await pending.options.onAccepted!('turn_retry');
   await wrapper.find('.pc-stop').trigger('click');
@@ -424,7 +482,7 @@ it('clears cancel failure feedback if the reply finishes before the user retries
     return requestImplementation(method, path);
   });
   const wrapper = await mountSurface();
-  await wrapper.findAll('.pc-choice')[1]!.trigger('click');
+  await sendFromInput(wrapper);
   await flushPromises();
   await pending.options.onAccepted!('turn_finish');
   await wrapper.find('.pc-stop').trigger('click');
@@ -444,14 +502,14 @@ it('does not let a late cancel response overwrite the next turn', async () => {
     : requestImplementation(method, path));
   const pending = pendingStream();
   const wrapper = await mountSurface();
-  await wrapper.findAll('.pc-choice')[1]!.trigger('click');
+  await sendFromInput(wrapper);
   await flushPromises();
   const oldOptions = pending.options;
   await oldOptions.onAccepted!('turn_old');
   await wrapper.find('.pc-stop').trigger('click');
   pending.complete();
   await flushPromises();
-  await wrapper.findAll('.pc-choice')[1]!.trigger('click');
+  await sendFromInput(wrapper);
   await flushPromises();
   const nextSignal = pending.options.signal!;
   finishCancel();
@@ -462,10 +520,10 @@ it('does not let a late cancel response overwrite the next turn', async () => {
   await flushPromises();
 });
 
-it('keeps a failed whisper editable until retry succeeds', async () => {
+it('retries the original unknown whisper and preserves newer draft edits', async () => {
   streamTurn.mockRejectedValueOnce(new Error('connection lost'));
   const wrapper = await mountSurface();
-  await wrapper.find('.pc-whisper-pill').trigger('click');
+  await wrapper.get('.pc-whisper-input input, .pc-whisper-input textarea').trigger('focus');
   const input = wrapper.find('.pc-whisper-input input');
   await input.setValue('讲讲环路等待');
   await input.trigger('keydown', { key: 'Enter' });
@@ -476,9 +534,10 @@ it('keeps a failed whisper editable until retry succeeds', async () => {
   await wrapper.find('.pc-retry').trigger('click');
   await flushPromises();
   expect(streamTurn).toHaveBeenCalledTimes(2);
-  expect(streamTurn.mock.calls[1]![1]).toBe('用例子讲讲环路等待');
-  expect(streamTurn.mock.calls[1]![3].idempotencyKey).not.toBe(streamTurn.mock.calls[0]![3].idempotencyKey);
-  expect(wrapper.find('.pc-whisper-input').exists()).toBe(false);
+  expect(streamTurn.mock.calls[1]![1]).toBe('讲讲环路等待');
+  expect(streamTurn.mock.calls[1]![3].idempotencyKey).toBe(streamTurn.mock.calls[0]![3].idempotencyKey);
+  expect(wrapper.get('.pc-whisper-input input').element.value).toBe('用例子讲讲环路等待');
+  expect(wrapper.find('.pc-whisper-input').exists()).toBe(true);
 });
 
 it('keeps a new question visible when an earlier multi-question answer finishes', async () => {
@@ -493,7 +552,7 @@ it('keeps a new question visible when an earlier multi-question answer finishes'
   const submitQuestionAnswers=vi.fn(()=>new Promise<void>(resolve=>{saved=resolve;}));
   configureAervoxClient({transport:{request:request as never,streamTurn,observeTurn,submitQuestionAnswers,decideToolApproval:vi.fn()}});
   const wrapper=await mountSurface();
-  await wrapper.findAll('.pc-choice')[1]!.trigger('click');await flushPromises();
+  await sendFromInput(wrapper);await flushPromises();
   await wrapper.findAll('.uq-option-btn')[0]!.trigger('click');await wrapper.findAll('.uq-option-btn')[1]!.trigger('click');
   await wrapper.findAll('.uq-custom-input input')[1]!.setValue('带示例');await wrapper.get('.uq-submit-btn').trigger('click');
   forward.onUserQuestion!({turnId:'turn',step:2,questions:[{id:'next',question:'新的确认'}]});saved();await flushPromises();
@@ -511,25 +570,25 @@ it('does not replace a recoverable reply when reselecting the current session', 
   });
   observeTurn.mockImplementationOnce(async (_id,cb)=>{cb.onDelta('后续正文。');cb.onDone();});
   const wrapper=await mountSurface();
-  await wrapper.findAll('.pc-choice')[1]!.trigger('click');await flushPromises();
-  await wrapper.findAll('.pc-choice')[0]!.trigger('click');
+  await sendFromInput(wrapper);await flushPromises();
+  await wrapper.get('.pc-home-nav .pc-home-entry').trigger('click');
   expect(wrapper.get('.pc-dialogue-text').text()).toBe('原始正文。');
   await wrapper.get('.pc-resume').trigger('click');await flushPromises();
   expect(wrapper.get('.pc-dialogue-text').text()).toBe('原始正文。后续正文。');
   expect(streamTurn).toHaveBeenCalledOnce();
 });
-it('detaches recovery when selecting another session', async () => {
+it('keeps recovery while opening saved history', async () => {
   const other={...recentSession,id:'ses_other',title:'另一个话题'};
   localStorage.setItem('aervox_active_session_id',other.id);
-  request.mockImplementation(async (method,path)=>path==='/v1/sessions'&&method==='GET'?{items:[recentSession,other]}:requestImplementation(method,path));
+  request.mockImplementation(async (method,path)=>path.split('?')[0]==='/v1/sessions'&&method==='GET'?{items:[recentSession,other]}:requestImplementation(method,path));
   streamTurn.mockImplementationOnce(async (_s,_c,cb,options)=>{await options.onAccepted('turn');cb.onDelta('旧会话正文。');throw new Error('offline');});
   const wrapper=await mountSurface();
-  await wrapper.findAll('.pc-choice')[1]!.trigger('click');await flushPromises();
+  await sendFromInput(wrapper);await flushPromises();
   expect(wrapper.find('.pc-resume').exists()).toBe(true);
-  await wrapper.findAll('.pc-choice')[0]!.trigger('click');await flushPromises();
-  expect(localStorage.getItem('aervox_active_session_id')).toBe('ses_recent');
-  expect(wrapper.find('.pc-resume').exists()).toBe(false);
-  expect(wrapper.find('.pc-feedback').exists()).toBe(false);
+  await wrapper.get('.pc-home-nav .pc-home-entry').trigger('click');await flushPromises();
+  expect(localStorage.getItem('aervox_active_session_id')).toBe('ses_other');
+  expect(wrapper.find('.pc-resume').exists()).toBe(true);
+  expect(wrapper.find('.pc-feedback').exists()).toBe(true);
   expect(observeTurn).not.toHaveBeenCalled();
 });
 it('preserves partial output when a terminal interruption has no error event', async () => {
@@ -538,7 +597,7 @@ it('preserves partial output when a terminal interruption has no error event', a
     await cb.onEvent({eventId:'done',turnId:'turn',sequence:2,eventType:'done',data:{status:'Interrupted',reason:'max_steps',isComplete:false}});
   });
   const wrapper=await mountSurface();
-  await wrapper.findAll('.pc-choice')[1]!.trigger('click');await flushPromises();
+  await sendFromInput(wrapper);await flushPromises();
   expect(wrapper.get('.pc-dialogue-text').text()).toBe('已完成的部分。');
   expect(wrapper.get('.pc-feedback').attributes('data-kind')).toBe('turn-error');
   expect(wrapper.get('.pc-feedback').text()).toContain('本次回复未完成');
@@ -564,7 +623,7 @@ it('opts into official Material controls only when the mobile composition root p
   const mobile = await mountSurface('mobile', true);
   expect(mobile.get('.proactive-companion').attributes('data-design-system')).toBe('material3');
   expect(mobile.findAll('md-icon-button[aria-label="打开设置"]')).toHaveLength(1);
-  expect(mobile.findAll('.pc-choice md-ripple')).toHaveLength(2);
+  expect(mobile.findAll('.pc-home-nav .pc-home-entry')).toHaveLength(4);
   expect(mobile.find('.pc-whisper-input textarea').exists()).toBe(true);
   expect(mobile.find('[aria-label="回到完整工作台"]').exists()).toBe(false);
   const desktop = await mountSurface('desktop');
@@ -590,8 +649,8 @@ it('retains native input IME, its persistent label and real submission in the Ma
 
 it('keeps independent mobile suggestions within its registered conversation capability', async () => {
   const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
-  expect(wrapper.findAll('.pc-choice')).toHaveLength(1);
-  expect(wrapper.get('.pc-choice').text()).toContain('继续「死锁复习」');
+  expect(wrapper.findAll('.pc-home-nav .pc-home-entry')).toHaveLength(4);
+  expect(wrapper.get('.pc-home-nav .pc-home-entry').text()).toContain('死锁复习');
   expect(wrapper.text()).not.toContain('先专注 25 分钟');
   expect(wrapper.get('.pc-dialogue-ctx').text()).toBe('本机对话');
   expect(wrapper.get('.pc-pet-status').text()).toBe('对话');
@@ -600,7 +659,7 @@ it('keeps independent mobile suggestions within its registered conversation capa
 it('does not invent a plugin action when the independent mobile host has no recent conversations', async () => {
   request.mockImplementation(async () => ({ items: [] }));
   const wrapper = await mountSurface('mobile', true, 'web_default', undefined, true);
-  expect(wrapper.find('.pc-choices').exists()).toBe(false);
+  expect(wrapper.get('.pc-home-nav .pc-home-entry').attributes('disabled')).toBeDefined();
   expect(wrapper.find('.pc-whisper-input textarea').exists()).toBe(true);
 });
 
@@ -642,7 +701,7 @@ it('opens model settings after a definite native refusal and lets the preserved 
 
 it('keeps mobile session switching and creation available after missing model configuration', async () => {
   const second = { ...recentSession, id: 'second', title: '另一段对话' };
-  request.mockImplementation(async (method, path) => method === 'GET' && path === '/v1/sessions'
+  request.mockImplementation(async (method, path) => method === 'GET' && path.split('?')[0] === '/v1/sessions'
     ? { items: [recentSession, second] } : requestImplementation(method, path));
   streamTurn.mockRejectedValueOnce(new AervoxHttpError(422, 'native', { code: 'MODEL_NOT_CONFIGURED' }));
   const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true);
@@ -654,14 +713,14 @@ it('keeps mobile session switching and creation available after missing model co
   expect(localStorage.getItem('aervox-mobile-draft:ses_recent')).toBe('保留在原会话的草稿');
   sessions.vm.$emit('new'); await flushPromises();
   expect(wrapper.get('.pc-current-session').text()).toBe('新对话');
-  expect(request.mock.calls.filter(([method, path]) => method === 'POST' && path === '/v1/sessions')).toHaveLength(1);
+  expect(request.mock.calls.filter(([method, path]) => method === 'POST' && path.split('?')[0] === '/v1/sessions')).toHaveLength(1);
   expect(streamTurn).toHaveBeenCalledOnce();
 });
 
 it('renames a mobile session only after the host acknowledges the new title', async () => {
   const second = { ...recentSession, id: 'second', title: '另一段对话' };
   request.mockImplementation(async (method, path) => {
-    if (method === 'GET' && path === '/v1/sessions') return { items: [recentSession, second] };
+    if (method === 'GET' && path.split('?')[0] === '/v1/sessions') return { items: [recentSession, second] };
     if (method === 'PATCH' && path === '/v1/sessions/second') return { ...second, title: '改过的名字' };
     return requestImplementation(method, path);
   });
@@ -679,7 +738,7 @@ it('renames a mobile session only after the host acknowledges the new title', as
 
 it('keeps the old mobile session title when the rename is rejected', async () => {
   request.mockImplementation(async (method, path) => {
-    if (method === 'GET' && path === '/v1/sessions') return { items: [recentSession] };
+    if (method === 'GET' && path.split('?')[0] === '/v1/sessions') return { items: [recentSession] };
     if (method === 'PATCH') throw new AervoxHttpError(500, 'native', { code: 'STORE_FAILED', message: 'PRIVATE_DETAIL' });
     return requestImplementation(method, path);
   });
@@ -697,7 +756,7 @@ it('deletes a non-active mobile session and reports it only after the host confi
   const second = { ...recentSession, id: 'second', title: '另一段对话' };
   let deleted = false;
   request.mockImplementation(async (method, path) => {
-    if (method === 'GET' && path === '/v1/sessions') return { items: deleted ? [recentSession] : [recentSession, second] };
+    if (method === 'GET' && path.split('?')[0] === '/v1/sessions') return { items: deleted ? [recentSession] : [recentSession, second] };
     if (method === 'DELETE' && path === '/v1/sessions/second') { deleted = true; return undefined; }
     return requestImplementation(method, path);
   });
@@ -714,7 +773,7 @@ it('deletes a non-active mobile session and reports it only after the host confi
 it('deletes the active mobile session, moves to the remaining conversation and clears its unsent draft', async () => {
   const second = { ...recentSession, id: 'second', title: '另一段对话' };
   request.mockImplementation(async (method, path) => {
-    if (method === 'GET' && path === '/v1/sessions') return { items: [recentSession, second] };
+    if (method === 'GET' && path.split('?')[0] === '/v1/sessions') return { items: [recentSession, second] };
     if (method === 'DELETE' && path === '/v1/sessions/ses_recent') return undefined;
     return requestImplementation(method, path);
   });
@@ -759,7 +818,7 @@ it('clears an inactive deleted session text and attachment only after its deleti
     removeItem: (key: string) => { values.delete(key); } };
   let confirm!: () => void;
   request.mockImplementation(async (method, path) => {
-    if (method === 'GET' && path === '/v1/sessions') return { items: [recentSession, second] };
+    if (method === 'GET' && path.split('?')[0] === '/v1/sessions') return { items: [recentSession, second] };
     if (method === 'DELETE' && path === '/v1/sessions/second') return new Promise<void>(resolve => { confirm = resolve; });
     return requestImplementation(method, path);
   });
@@ -786,7 +845,7 @@ it('clears the active deleted session attachment while preserving replacement se
     setItem: (key: string, value: string) => { values.set(key, value); },
     removeItem: (key: string) => { values.delete(key); } };
   request.mockImplementation(async (method, path) => {
-    if (method === 'GET' && path === '/v1/sessions') return { items: [recentSession, second] };
+    if (method === 'GET' && path.split('?')[0] === '/v1/sessions') return { items: [recentSession, second] };
     if (method === 'DELETE' && path === '/v1/sessions/ses_recent') return undefined;
     return requestImplementation(method, path);
   });
@@ -837,7 +896,7 @@ it.each(['rejected', 'confirmed'] as const)('keeps deletion-pending drafts until
   let confirm!: () => void;
   let reject!: (reason: unknown) => void;
   request.mockImplementation(async (method, path) => {
-    if (method === 'GET' && path === '/v1/sessions') return { items: [recentSession, second] };
+    if (method === 'GET' && path.split('?')[0] === '/v1/sessions') return { items: [recentSession, second] };
     if (method === 'DELETE') return new Promise<void>((resolve, refuse) => { confirm = resolve; reject = refuse; });
     return requestImplementation(method, path);
   });
@@ -950,7 +1009,7 @@ it('remeasures a mobile draft on focus and resize even without ResizeObserver', 
 it('keeps persistent cancellation before observer abort through a Material stop control', async () => {
   const pending = pendingStream();
   const wrapper = await mountSurface('mobile', true);
-  await wrapper.findAll('.pc-choice')[1]!.trigger('click');
+  await sendFromInput(wrapper);
   await flushPromises();
   await pending.options.onAccepted!('turn_material');
   expect(wrapper.get('md-linear-progress').attributes('indeterminate')).toBeDefined();
@@ -1039,7 +1098,7 @@ it('keeps a newer mobile draft after an earlier accepted reply completes', async
 it('allows browsing mobile sessions and stored history without cancelling or losing a live owner', async () => {
   const pending = pendingStream();
   const wrapper = await mountSurface('mobile', true);
-  await wrapper.findAll('.pc-choice')[1]!.trigger('click'); await flushPromises();
+  await sendFromInput(wrapper); await flushPromises();
   await pending.options.onAccepted!('turn_keep_owner');
   await wrapper.get('[aria-label="会话列表"]').trigger('click');
   const list = wrapper.getComponent(MobileSessionsDialog);
@@ -1055,7 +1114,7 @@ it('allows browsing mobile sessions and stored history without cancelling or los
 
 it('restores drafts when explicitly switching mobile sessions and does not pretend a greeting is stored history', async () => {
   const second = { ...recentSession, id: 'second', title: '另一段对话' };
-  request.mockImplementation(async (method, path) => method === 'GET' && path === '/v1/sessions' ? { items: [recentSession, second] } : requestImplementation(method, path));
+  request.mockImplementation(async (method, path) => method === 'GET' && path.split('?')[0] === '/v1/sessions' ? { items: [recentSession, second] } : requestImplementation(method, path));
   const wrapper = await mountSurface('mobile', true);
   await wrapper.get('.pc-whisper-input textarea').setValue('留在第一段的草稿');
   localStorage.setItem('aervox-mobile-draft:second', '第二段原来的草稿');
@@ -1068,7 +1127,7 @@ it('restores drafts when explicitly switching mobile sessions and does not prete
 
 it('does not create a replacement mobile conversation when reading the saved list fails', async () => {
   request.mockImplementation(async (method, path) => {
-    if (method === 'GET' && path === '/v1/sessions') throw new Error('offline');
+    if (method === 'GET' && path.split('?')[0] === '/v1/sessions') throw new Error('offline');
     return requestImplementation(method, path);
   });
   const wrapper = await mountSurface('mobile', true, 'web_default');
@@ -1083,7 +1142,7 @@ it('does not create a replacement mobile conversation when reading the saved lis
 
 it('allows sending after explicit mobile session creation recovers from a failed list read', async () => {
   request.mockImplementation(async (method, path) => {
-    if (method === 'GET' && path === '/v1/sessions') throw new Error('list unavailable');
+    if (method === 'GET' && path.split('?')[0] === '/v1/sessions') throw new Error('list unavailable');
     return requestImplementation(method, path);
   });
   const wrapper = await mountSurface('mobile', true, 'web_default');
@@ -1199,7 +1258,7 @@ it('allows an explicit mobile session choice after the server has refused an una
 it('keeps the placeholder draft read-only only while preparing a new mobile session', async () => {
   let release!: (value: unknown) => void;
   request.mockImplementation(async (method, path) => {
-    if (method === 'POST' && path === '/v1/sessions') return new Promise(resolve => { release = resolve; });
+    if (method === 'POST' && path.split('?')[0] === '/v1/sessions') return new Promise(resolve => { release = resolve; });
     return requestImplementation(method, path);
   });
   const pending = pendingStream();
@@ -1263,7 +1322,7 @@ it('resumes the identified turn after a saved answer when the first question str
     options!.signal!.addEventListener('abort', () => resolve(), { once: true });
   }));
   const wrapper = await mountSurface('mobile', true);
-  await wrapper.findAll('.pc-choice')[1]!.trigger('click'); await flushPromises();
+  await sendFromInput(wrapper); await flushPromises();
   const question = wrapper.getComponent({ name: 'UserQuestionComposer' });
   question.vm.$emit('submit', [{ id: 'q1', selected: [], custom: '第一答' }]); await flushPromises();
   expect(observeTurn).toHaveBeenCalledTimes(1);
@@ -1298,7 +1357,7 @@ it('does not push a hidden input layer above an open mobile modal when a draft i
 
 it('shows creation failure inside the mobile list and keeps the old conversation usable', async () => {
   request.mockImplementation(async (method, path) => {
-    if (method === 'POST' && path === '/v1/sessions') throw new Error('create failed');
+    if (method === 'POST' && path.split('?')[0] === '/v1/sessions') throw new Error('create failed');
     return requestImplementation(method, path);
   });
   const wrapper = await mountSurface('mobile', true);
@@ -1316,12 +1375,158 @@ it('shows creation failure inside the mobile list and keeps the old conversation
 });
 
 it('does not label a missing stored mobile identity as a newly created conversation', async () => {
+  request.mockImplementation(async (method, path) => path === '/v1/sessions/deleted_stored_session' ? Promise.reject(new AervoxHttpError(404, path, {code: 'SESSION_NOT_FOUND'})) : requestImplementation(method, path));
   const wrapper = await mountSurface('mobile', true, 'deleted_stored_session');
   expect(wrapper.get('.pc-current-session').text()).toBe('当前会话不可用');
   await wrapper.get('.pc-whisper-input textarea').setValue('先不要新建');
   await wrapper.get('.pc-whisper-input md-filled-button').trigger('click'); await flushPromises();
   expect(wrapper.getComponent(MobileSessionsDialog).props('notice')).toContain('当前会话已不可用');
   expect(request.mock.calls.some(call => call[0] === 'POST' && call[1] === '/v1/sessions')).toBe(false);
+});
+
+it('keeps a selected session outside the first 100 rows and its unknown submission while loading more', async () => {
+  const firstPage = Array.from({ length: 100 }, (_, i) => ({ ...recentSession, id: `ses_page_${i}`, title: `已加载 ${i}` }));
+  const selected = { ...recentSession, id: 'ses_page_101', title: '第一页之外的当前会话' };
+  request.mockImplementation(async (method, path) => {
+    if (method === 'GET' && path === `/v1/sessions/${selected.id}`) return selected;
+    if (method === 'GET' && path.startsWith('/v1/sessions?')) return { items: path.includes('offset=100') ? [selected] : firstPage };
+    return requestImplementation(method, path);
+  });
+  streamTurn.mockRejectedValueOnce(new TypeError('unknown acceptance'));
+  const wrapper = await mountSurface('desktop', false, selected.id);
+  expect(request).toHaveBeenCalledWith('GET', `/v1/sessions/${selected.id}`);
+  expect(wrapper.get('.pc-current-session').text()).toBe(selected.title);
+  await sendFromInput(wrapper, '第一页外会话的原请求'); await flushPromises();
+  const pendingKey = streamTurn.mock.calls[0]![3].idempotencyKey;
+  await wrapper.get('.pc-whisper-input input').setValue('下一轮尚未发送的草稿');
+  await wrapper.findAll('.pc-home-nav .pc-home-entry').find(button => button.text().startsWith('记录'))!.trigger('click'); await flushPromises();
+  const list = wrapper.getComponent(MobileSessionsDialog);
+  expect(list.props('hasMore')).toBe(true); expect(list.props('switchLocked')).toBe(true);
+  list.vm.$emit('more'); await flushPromises();
+  expect(list.props('sessions')).toHaveLength(101); expect(list.props('hasMore')).toBe(false);
+  expect(list.props('activeSessionId')).toBe(selected.id);
+  expect((wrapper.get('.pc-whisper-input input').element as HTMLInputElement).value).toBe('下一轮尚未发送的草稿');
+  expect(wrapper.get('.pc-current-session').text()).toBe(selected.title);
+  expect(streamTurn).toHaveBeenCalledOnce();
+  await wrapper.get('.pc-retry').trigger('click'); await flushPromises();
+  expect(streamTurn.mock.calls[1]![0]).toBe(selected.id);
+  expect(streamTurn.mock.calls[1]![1]).toContain('第一页外会话的原请求');
+  expect(streamTurn.mock.calls[1]![3].idempotencyKey).toBe(pendingKey);
+  expect((wrapper.get('.pc-whisper-input input').element as HTMLInputElement).value).toBe('下一轮尚未发送的草稿');
+  expect(request.mock.calls.some(call => call[0] === 'POST' && call[1] === '/v1/sessions')).toBe(false);
+});
+
+it.each([false, true])('keeps the injected learning instance and its local draft through close, closed and reopen (material3=%s)', async material3 => {
+  let mounted = 0; const unmounted = vi.fn();
+  const Panel = defineComponent({
+    setup() {
+      mounted++; const draft = ref(''); const unknownKey = ref('learning-pending-original');
+      onBeforeUnmount(unmounted);
+      return () => h('div', { class: 'learning-panel-probe' }, [
+        h('input', { value: draft.value, onInput: (event: Event) => { draft.value = (event.target as HTMLInputElement).value; } }),
+        h('span', { class: 'learning-pending-key' }, unknownKey.value),
+      ]);
+    },
+  });
+  const wrapper = await mountSurface('mobile', material3, recentSession.id, undefined, true, undefined, Panel);
+  const open = async () => {
+    await wrapper.findAll('.pc-home-nav .pc-home-entry').find(button => button.text().startsWith('今日'))!.trigger('click');
+    await flushPromises();
+    const today = material3 ? [...document.querySelectorAll('md-dialog[aria-label="今日"]')].at(-1)! : document;
+    const entry = [...today.querySelectorAll<HTMLButtonElement>('button.pc-home-entry')].filter(button => button.textContent?.includes('学习与复习')).at(-1);
+    expect(entry).toBeDefined(); entry!.click(); await flushPromises();
+  };
+  await open();
+  const original = wrapper.getComponent(Panel).vm;
+  await wrapper.getComponent(Panel).get('input').setValue('保留我的练习草稿');
+  const dialog = wrapper.findAllComponents(AervoxDialog).find(item => item.props('title') === '学习与复习')!;
+  expect(dialog.props('destroyOnClose')).toBe(false);
+  if (material3) {
+    const nativeDialog = document.querySelector('md-dialog[aria-label="学习与复习"]')!;
+    nativeDialog.dispatchEvent(new Event('close')); await flushPromises();
+    nativeDialog.dispatchEvent(new Event('closed')); await flushPromises();
+  } else {
+    const elementDialog = dialog.findComponent({ name: 'ElDialog' });
+    elementDialog.vm.$emit('update:modelValue', false); elementDialog.vm.$emit('close');
+    await flushPromises(); elementDialog.vm.$emit('closed'); await flushPromises();
+  }
+  expect(dialog.props('modelValue')).toBe(false);
+  expect(unmounted).not.toHaveBeenCalled();
+  await open();
+  expect(wrapper.getComponent(Panel).vm).toBe(original); expect(mounted).toBe(1);
+  expect((wrapper.getComponent(Panel).get('input').element as HTMLInputElement).value).toBe('保留我的练习草稿');
+  expect(wrapper.getComponent(Panel).get('.learning-pending-key').text()).toBe('learning-pending-original');
+  expect(streamTurn).not.toHaveBeenCalled();
+});
+
+it('opens diary directly on desktop and distinguishes read failure from no diary', async () => {
+  let readsFail = true;
+  request.mockImplementation(async (method, path) => {
+    if (path.startsWith('/v1/diaries?localDate=')) {
+      if (readsFail) throw new Error('read failed');
+      return { id: 'diary_desktop', title: '直接可读的日记', localDate: 'today', content: '重新读取的日记正文' };
+    }
+    if (path === '/v1/diaries?limit=8') return { items: [] };
+    return requestImplementation(method, path);
+  });
+  const wrapper = await mountSurface('desktop');
+  expect(request.mock.calls.some(call => call[1].startsWith('/v1/diaries'))).toBe(false);
+  await wrapper.findAll('.pc-home-nav .pc-home-entry').find(button => button.text().startsWith('日记'))!.trigger('click'); await flushPromises();
+  const diary = wrapper.getComponent(DiaryView);
+  expect(diary.text()).toContain('今天的日记没有读到'); expect(diary.text()).not.toContain('今天还没写');
+  readsFail = false; diary.vm.$emit('refresh'); await flushPromises();
+  expect(diary.text()).toContain('重新读取的日记正文'); expect(diary.props('error')).toBe('');
+  expect(streamTurn).not.toHaveBeenCalled();
+});
+
+it.each(['unknown', 'approval', 'question'])('allows diary reads while blocking generation during a pending %s chat', async state => {
+  request.mockImplementation(async (method, path) => {
+    if (path.startsWith('/v1/diaries?localDate=')) throw new AervoxHttpError(404, path, {});
+    if (path === '/v1/diaries?limit=8') return { items: [{ id: 'past', title: '仍可读的往期', content: '旧正文', localDate: '2026-11-01' }] };
+    return requestImplementation(method, path);
+  });
+  streamTurn.mockImplementationOnce(async (_id, _text, callbacks: TurnCallbacks, options: StreamTurnOptions) => {
+    if (state === 'unknown') throw new TypeError('unknown acceptance');
+    await options.onAccepted?.('turn_wait_approval');
+    if (state === 'question') callbacks.onUserQuestion!({ turnId: 'turn_wait_approval', step: 1, questions: [{ id: 'pending_question', question: '请确认方向' }] });
+    else callbacks.onToolApproval!({ turnId: 'turn_wait_approval', approvalId: 'approval_wait_diary', toolName: 'device_tap', argumentsHash: 'argument_hash' });
+  });
+  const wrapper = await mountSurface('desktop');
+  await sendFromInput(wrapper); await flushPromises();
+  await wrapper.findAll('.pc-home-nav .pc-home-entry').find(button => button.text().startsWith('日记'))!.trigger('click'); await flushPromises();
+  const diary = wrapper.getComponent(DiaryView);
+  expect(diary.props('writeDisabled')).toBe(true);
+  expect(diary.findAll('button').find(button => button.text() === '写一篇')!.attributes('disabled')).toBeDefined();
+  diary.vm.$emit('toggleHistory'); await flushPromises(); expect(diary.text()).toContain('仍可读的往期');
+  diary.vm.$emit('write'); await flushPromises();
+  expect(request.mock.calls.some(call => call[1] === '/v1/diaries/generate-today')).toBe(false);
+  expect(streamTurn).toHaveBeenCalledOnce();
+});
+
+it('blocks chat sends, creation and switching during diary generation without blocking read-only history', async () => {
+  let complete!: () => void;
+  request.mockImplementation(async (method, path) => {
+    if (path.startsWith('/v1/diaries?localDate=')) throw new AervoxHttpError(404, path, {});
+    if (path === '/v1/diaries?limit=8') return { items: [] };
+    if (path === '/v1/diaries/generate-today') return new Promise(resolve => { complete = () => resolve({ diaryId: 'created_diary', title: '写好了', localDate: 'today', content: '正文', generatedBy: 'template' }); });
+    return requestImplementation(method, path);
+  });
+  const wrapper = await mountSurface('desktop');
+  await wrapper.findAll('.pc-home-nav .pc-home-entry').find(button => button.text().startsWith('日记'))!.trigger('click'); await flushPromises();
+  wrapper.getComponent(DiaryView).vm.$emit('write'); await flushPromises();
+  expect(wrapper.getComponent(DiaryView).props('writing')).toBe(true);
+  await sendFromInput(wrapper, '等日记完成再发'); await flushPromises();
+  await wrapper.findAll('.pc-home-nav .pc-home-entry').find(button => button.text().startsWith('记录'))!.trigger('click'); await flushPromises();
+  const list = wrapper.getComponent(MobileSessionsDialog);
+  expect(list.props('switchLocked')).toBe(true); expect(list.props('lockReason')).toContain('正在写日记');
+  list.vm.$emit('new'); list.vm.$emit('select', recentSession.id); await flushPromises();
+  list.vm.$emit('history', recentSession); await flushPromises();
+  expect(wrapper.getComponent(MobileHistoryDialog).props('modelValue')).toBe(true);
+  expect(streamTurn).not.toHaveBeenCalled();
+  expect(request.mock.calls.some(call => call[0] === 'POST' && call[1] === '/v1/sessions')).toBe(false);
+  complete(); await flushPromises();
+  expect(wrapper.getComponent(DiaryView).props('writing')).toBe(false);
+  expect((wrapper.get('.pc-whisper-input input').element as HTMLInputElement).value).toBe('等日记完成再发');
 });
 
 it('copies only the reply text that is already visible on the mobile surface', async () => {
@@ -1437,6 +1642,164 @@ it('attaches a picked text file to the next message and clears it after sending'
   expect(sent).toContain('背熟第三章');
   expect(sent).toContain('notes.md');
   expect(wrapper.find('.pc-attachment-chip').exists()).toBe(false);
+});
+
+it('shows a restored desktop attachment and clears its original chip only after unknown retry acceptance', async () => {
+  localStorage.setItem('aervox-mobile-draft:attachment-ses_recent', JSON.stringify({ name: 'original.txt', text: '原附件正文' }));
+  streamTurn.mockRejectedValueOnce(new TypeError('unknown acceptance'));
+  const wrapper = await mountSurface('desktop');
+  expect(wrapper.get('.pc-attachment-chip').text()).toContain('original.txt');
+  expect(wrapper.get('[aria-label="移除附件"]').exists()).toBe(true);
+  await sendFromInput(wrapper, '附上原文件'); await flushPromises();
+  const firstPayload = streamTurn.mock.calls[0]![1]; const key = streamTurn.mock.calls[0]![3].idempotencyKey;
+  expect(wrapper.get('.pc-attachment-chip').text()).toContain('original.txt');
+  await wrapper.get('.pc-retry').trigger('click'); await flushPromises();
+  expect(streamTurn.mock.calls[1]![1]).toBe(firstPayload); expect(streamTurn.mock.calls[1]![3].idempotencyKey).toBe(key);
+  expect(wrapper.find('.pc-attachment-chip').exists()).toBe(false);
+  expect(localStorage.getItem('aervox-mobile-draft:attachment-ses_recent')).toBeNull();
+});
+
+it.each([
+  { name: 'next.txt', text: '下一轮新附件正文' },
+  { name: 'original.txt', text: '冻结的原附件正文' },
+])('keeps a newer attachment edit in the same owner when the original unknown snapshot is accepted: %j', async nextAttachment => {
+  localStorage.setItem('aervox-mobile-draft:attachment-ses_recent', JSON.stringify({ name: 'original.txt', text: '冻结的原附件正文' }));
+  const pickTextFile = vi.fn(async () => nextAttachment);
+  configureAervoxClient({ sessionId: 'test_initial', platform: {}, transport: {
+    request: request as never, streamTurn: streamTurn as never, observeTurn: observeTurn as never,
+    submitQuestionAnswers: vi.fn(), decideToolApproval: vi.fn(), pickTextFile,
+  } });
+  streamTurn.mockRejectedValueOnce(new TypeError('unknown acceptance'));
+  const wrapper = await mountSurface('mobile', true);
+  await sendFromInput(wrapper, '原请求正文'); await flushPromises();
+  const firstPayload = streamTurn.mock.calls[0]![1]; const key = streamTurn.mock.calls[0]![3].idempotencyKey;
+  await wrapper.get('[aria-label="移除附件"]').trigger('click'); await flushPromises();
+  await wrapper.get('[aria-label="添加文本附件"]').trigger('click'); await flushPromises();
+  expect(pickTextFile).toHaveBeenCalledOnce();
+  expect(wrapper.get('.pc-attachment-chip').text()).toContain(nextAttachment.name);
+  await wrapper.get('.pc-whisper-input textarea').setValue('下一轮新草稿');
+  await wrapper.get('.pc-retry').trigger('click'); await flushPromises();
+  expect(streamTurn.mock.calls[1]![1]).toBe(firstPayload); expect(streamTurn.mock.calls[1]![3].idempotencyKey).toBe(key);
+  expect(streamTurn.mock.calls[1]![1]).toContain('冻结的原附件正文'); expect(streamTurn.mock.calls[1]![1]).not.toContain('下一轮新附件正文');
+  expect(wrapper.get('.pc-attachment-chip').text()).toContain(nextAttachment.name);
+  expect(localStorage.getItem('aervox-mobile-draft:attachment-ses_recent')).toBe(JSON.stringify(nextAttachment));
+  expect((wrapper.get('.pc-whisper-input textarea').element as HTMLTextAreaElement).value).toBe('下一轮新草稿');
+});
+
+it('attachment owner regression: clears the original unknown attachment after switching away and back without touching the other owner', async () => {
+  const original = JSON.stringify({ name: 'original.txt', text: '原会话附件正文' });
+  const other = JSON.stringify({ name: 'other.txt', text: '另一个会话附件正文' });
+  localStorage.setItem('aervox-mobile-draft:attachment-ses_recent', original);
+  localStorage.setItem('aervox-mobile-draft:attachment-ses_other', other);
+  localStorage.setItem('aervox-mobile-draft:ses_other', '另一个会话的草稿');
+  streamTurn.mockRejectedValueOnce(new TypeError('unknown acceptance'));
+  const wrapper = await mountSurface('desktop');
+  await sendFromInput(wrapper, '原会话请求'); await flushPromises();
+  const firstPayload = streamTurn.mock.calls[0]![1];
+  const firstKey = streamTurn.mock.calls[0]![3].idempotencyKey;
+  expect(wrapper.get('.pc-attachment-chip').text()).toContain('original.txt');
+  expect(localStorage.getItem('aervox-mobile-draft:attachment-ses_recent')).toBe(original);
+
+  setSessionId('ses_other'); await flushPromises();
+  expect(wrapper.get('.pc-attachment-chip').text()).toContain('other.txt');
+  expect((wrapper.get('.pc-whisper-input input').element as HTMLInputElement).value).toBe('另一个会话的草稿');
+  setSessionId(recentSession.id); await flushPromises();
+  expect(wrapper.get('.pc-attachment-chip').text()).toContain('original.txt');
+  await wrapper.get('.pc-retry').trigger('click'); await flushPromises();
+
+  expect(streamTurn).toHaveBeenCalledTimes(2);
+  expect(streamTurn.mock.calls[1]![0]).toBe(recentSession.id);
+  expect(streamTurn.mock.calls[1]![1]).toBe(firstPayload);
+  expect(streamTurn.mock.calls[1]![3].idempotencyKey).toBe(firstKey);
+  expect(wrapper.find('.pc-attachment-chip').exists()).toBe(false);
+  expect(localStorage.getItem('aervox-mobile-draft:attachment-ses_recent')).toBeNull();
+  expect(localStorage.getItem('aervox-mobile-draft:attachment-ses_other')).toBe(other);
+  expect(localStorage.getItem('aervox-mobile-draft:ses_other')).toBe('另一个会话的草稿');
+  setSessionId('ses_other'); await flushPromises();
+  expect(wrapper.get('.pc-attachment-chip').text()).toContain('other.txt');
+  expect((wrapper.get('.pc-whisper-input input').element as HTMLInputElement).value).toBe('另一个会话的草稿');
+});
+
+it.each(['web_default', ''])('attachment owner regression: preserves text and attachment when initial creation fails for owner "%s"', async ownerId => {
+  const original = JSON.stringify({ name: 'before-create.txt', text: '创建前附件正文' });
+  const attachmentStorageKey = `aervox-mobile-draft:attachment-${ownerId || 'none'}`;
+  const draftStorageKey = `aervox-mobile-draft:${ownerId}`;
+  localStorage.setItem(attachmentStorageKey, original);
+  localStorage.setItem(draftStorageKey, '创建前文字草稿');
+  request.mockImplementation(async (method, path) => {
+    if (method === 'POST' && path.split('?')[0] === '/v1/sessions') throw new Error('create failed');
+    return requestImplementation(method, path);
+  });
+  const wrapper = await mountSurface('desktop', false, 'web_default');
+  // mountSurface chooses a recent owner for an empty ID; apply that external
+  // selection after mounting to exercise the actual no-session send path.
+  if (!ownerId) { setSessionId(''); await flushPromises(); }
+  await sendFromInput(wrapper, '创建前文字草稿'); await flushPromises();
+
+  expect(request.mock.calls.filter(call => call[0] === 'POST' && call[1].split('?')[0] === '/v1/sessions')).toHaveLength(1);
+  expect(streamTurn).not.toHaveBeenCalled();
+  expect(localStorage.getItem('aervox_active_session_id')).toBe(ownerId);
+  expect((wrapper.get('.pc-whisper-input input').element as HTMLInputElement).value).toBe('创建前文字草稿');
+  expect(wrapper.get('.pc-attachment-chip').text()).toContain('before-create.txt');
+  expect(localStorage.getItem(attachmentStorageKey)).toBe(original);
+  expect(localStorage.getItem(draftStorageKey)).toBe('创建前文字草稿');
+  expect(localStorage.getItem('aervox-mobile-draft:attachment-ses_new')).toBeNull();
+});
+
+it('attachment owner regression: transfers the original attachment to the created owner and clears it after unknown retry acceptance', async () => {
+  const original = JSON.stringify({ name: 'before-create.txt', text: '随新会话发送的附件正文' });
+  localStorage.setItem('aervox-mobile-draft:attachment-web_default', original);
+  localStorage.setItem('aervox-mobile-draft:web_default', '随新会话发送的文字');
+  streamTurn.mockRejectedValueOnce(new TypeError('unknown acceptance'));
+  const wrapper = await mountSurface('desktop', false, 'web_default');
+  await sendFromInput(wrapper, '随新会话发送的文字'); await flushPromises();
+  const firstPayload = streamTurn.mock.calls[0]![1];
+  const firstKey = streamTurn.mock.calls[0]![3].idempotencyKey;
+
+  expect(streamTurn).toHaveBeenCalledOnce();
+  expect(streamTurn.mock.calls[0]![0]).toBe('ses_new');
+  expect(firstPayload).toContain('随新会话发送的附件正文');
+  expect(localStorage.getItem('aervox_active_session_id')).toBe('ses_new');
+  expect(wrapper.get('.pc-attachment-chip').text()).toContain('before-create.txt');
+  expect((wrapper.get('.pc-whisper-input input').element as HTMLInputElement).value).toBe('随新会话发送的文字');
+  expect(localStorage.getItem('aervox-mobile-draft:attachment-web_default')).toBeNull();
+  expect(localStorage.getItem('aervox-mobile-draft:web_default')).toBeNull();
+  expect(localStorage.getItem('aervox-mobile-draft:attachment-ses_new')).toBe(original);
+  expect(localStorage.getItem('aervox-mobile-draft:ses_new')).toBe('随新会话发送的文字');
+  await wrapper.get('.pc-retry').trigger('click'); await flushPromises();
+
+  expect(streamTurn).toHaveBeenCalledTimes(2);
+  expect(streamTurn.mock.calls[1]![0]).toBe('ses_new');
+  expect(streamTurn.mock.calls[1]![1]).toBe(firstPayload);
+  expect(streamTurn.mock.calls[1]![3].idempotencyKey).toBe(firstKey);
+  expect(wrapper.find('.pc-attachment-chip').exists()).toBe(false);
+  expect(localStorage.getItem('aervox-mobile-draft:attachment-ses_new')).toBeNull();
+  expect(localStorage.getItem('aervox-mobile-draft:ses_new')).toBeNull();
+});
+
+it.each(['web_default', ''])('attachment owner regression: retains text and attachment after stopping during initial creation for owner "%s" without submitting a turn', async ownerId => {
+  const original = JSON.stringify({ name: 'stopped-create.txt', text: '创建期间停止仍需保留的附件' });
+  const attachmentStorageKey = `aervox-mobile-draft:attachment-${ownerId || 'none'}`;
+  localStorage.setItem(attachmentStorageKey, original);
+  let release!: (value: unknown) => void;
+  request.mockImplementation(async (method, path) => {
+    if (method === 'POST' && path.split('?')[0] === '/v1/sessions') return new Promise(resolve => { release = resolve; });
+    return requestImplementation(method, path);
+  });
+  const wrapper = await mountSurface('desktop', false, 'web_default');
+  if (!ownerId) { setSessionId(''); await flushPromises(); }
+  await sendFromInput(wrapper, '创建期间停止仍需保留的文字'); await flushPromises();
+  await wrapper.get('.pc-stop').trigger('click'); await flushPromises();
+  expect(wrapper.get('.pc-attachment-chip').text()).toContain('stopped-create.txt');
+  expect(localStorage.getItem(attachmentStorageKey)).toBe(original);
+  release({ id: 'ses_new', title: '新对话', createdAt: '', updatedAt: '' }); await flushPromises();
+
+  expect(streamTurn).not.toHaveBeenCalled();
+  expect((wrapper.get('.pc-whisper-input input').element as HTMLInputElement).value).toBe('创建期间停止仍需保留的文字');
+  expect(wrapper.get('.pc-attachment-chip').text()).toContain('stopped-create.txt');
+  expect(localStorage.getItem('aervox-mobile-draft:attachment-ses_new')).toBe(original);
+  expect(localStorage.getItem('aervox-mobile-draft:ses_new')).toBe('创建期间停止仍需保留的文字');
+  expect(localStorage.getItem(attachmentStorageKey)).toBeNull();
 });
 
 it('hides dictation when the host provides no recognizer', async () => {

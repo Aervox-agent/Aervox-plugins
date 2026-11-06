@@ -57,11 +57,9 @@ async function shareSession() {
           </article>
           <p v-if="!turn.messages.length">这一轮暂无可显示的消息。</p>
         </section>
-        <p v-if="!page.items.length">这个会话还没有已保存的记录。</p>
-        <template v-else>
-          <AervoxButton v-if="page.nextCursor" :disabled="loading" @click="earlier">更早一页</AervoxButton>
-          <p v-else class="mobile-history-note">已经看到最早的记录。</p>
-        </template>
+        <p v-if="!page.items.length">这一页暂无可显示的对话记录。</p>
+        <AervoxButton v-if="page.nextCursor" :disabled="loading" @click="earlier">更早一页</AervoxButton>
+        <p v-else class="mobile-history-note">已到当前可读取记录的起点。</p>
       </template>
     </div>
   </AervoxDialog>

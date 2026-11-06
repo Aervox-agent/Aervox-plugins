@@ -58,7 +58,7 @@ it('keeps extension registries and cleanup separate across mounted workbenches',
     id: 'fixture-extension',
     setup(registry, context) {
       const index = registries.push(registry) - 1;
-      context!.navigation.setQuietStartup(true);
+      context!.navigation.setQuietStartup!(true);
       return cleanups[index];
     },
   };
@@ -92,7 +92,7 @@ it.each(['web', 'desktop'] as const)('approval on %s observes the original Turn 
     streamTurn, observeTurn, decideToolApproval, submitQuestionAnswers: vi.fn(),
   } });
   const plugin: BuiltinUIPlugin = { id:'fixture-extension', setup(_registry, context) {
-    context!.navigation.setQuietStartup(true);
+    context!.navigation.setQuietStartup!(true);
     void context!.sendMessage('save');
   }};
   const wrapper = mount(UISurfaceHost, {props:{ plugin:definition,surface:'main',platform,viewProps:{plugins:[plugin],showCompanion:false}}});
@@ -112,7 +112,7 @@ it.each(['web', 'desktop'] as const)('recovers %s observation into the same repl
   });
   const observeTurn = vi.fn(async (_turn,cb)=>{cb.onDelta('继续正文。');cb.onDone();});
   configureAervoxClient({transport:{request:vi.fn(async <T>(_m:string,path:string)=>({items:path==='/v1/plugins'?[fixturePlugin]:[]}) as T),streamTurn,observeTurn,decideToolApproval:vi.fn(),submitQuestionAnswers:vi.fn()}});
-  const plugin: BuiltinUIPlugin={id:'fixture-extension',setup(_registry,context){context!.navigation.setQuietStartup(true);void context!.sendMessage('你好');}};
+  const plugin: BuiltinUIPlugin={id:'fixture-extension',setup(_registry,context){context!.navigation.setQuietStartup!(true);void context!.sendMessage('你好');}};
   const wrapper=mount(UISurfaceHost,{props:{plugin:definition,surface:'main',platform,viewProps:{plugins:[plugin],showCompanion:false}}});
   await vi.waitFor(()=>expect(wrapper.text()).toContain('恢复接收回复'),{timeout:5000});
   const retry=wrapper.findAll('button').find(button=>button.text()==='恢复接收回复')!;
@@ -135,7 +135,7 @@ it.each(['standard','companion'])('answers complete questions in %s mode and kee
   let saved!:()=>void;
   const submitQuestionAnswers=vi.fn(()=>new Promise<void>(resolve=>{saved=resolve;}));
   configureAervoxClient({transport:{request:vi.fn(async <T>(_m:string,path:string)=>({items:path==='/v1/plugins'?[fixturePlugin]:[]}) as T),streamTurn,observeTurn:vi.fn(),decideToolApproval:vi.fn(),submitQuestionAnswers}});
-  const plugin:BuiltinUIPlugin={id:'fixture-extension',setup(_registry,context){context!.navigation.setQuietStartup(true);void context!.sendMessage('帮我选择');}};
+  const plugin:BuiltinUIPlugin={id:'fixture-extension',setup(_registry,context){context!.navigation.setQuietStartup!(true);void context!.sendMessage('帮我选择');}};
   const wrapper=mount(UISurfaceHost,{props:{plugin:definition,surface:'main',platform:'web',viewProps:{plugins:[plugin],showCompanion:false}}});
   await vi.waitFor(()=>expect(wrapper.find('.uq-submit-btn').exists()).toBe(true),{timeout:5000});
   await wrapper.findAll('.uq-option-btn')[0]!.trigger('click');await wrapper.findAll('.uq-option-btn')[1]!.trigger('click');
@@ -154,7 +154,7 @@ it('preserves partial output and reports terminal interruption separately from c
     await cb.onEvent({eventId:'done',turnId:'turn',sequence:2,eventType:'done',data:{status:'Interrupted',reason:'max_steps',isComplete:false}});
   });
   configureAervoxClient({transport:{request:vi.fn(async <T>(_m:string,path:string)=>({items:path==='/v1/plugins'?[fixturePlugin]:[]}) as T),streamTurn,observeTurn:vi.fn(),decideToolApproval:vi.fn(),submitQuestionAnswers:vi.fn()}});
-  const plugin:BuiltinUIPlugin={id:'fixture-extension',setup(_registry,context){context!.navigation.setQuietStartup(true);void context!.sendMessage('长任务');}};
+  const plugin:BuiltinUIPlugin={id:'fixture-extension',setup(_registry,context){context!.navigation.setQuietStartup!(true);void context!.sendMessage('长任务');}};
   const wrapper=mount(UISurfaceHost,{props:{plugin:definition,surface:'main',platform:'web',viewProps:{plugins:[plugin],showCompanion:false}}});
   await vi.waitFor(()=>expect(wrapper.text()).toContain('本次回复未完成'),{timeout:5000});
   expect(wrapper.text()).toContain('保留这段正文。');
