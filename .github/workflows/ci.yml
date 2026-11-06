@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 env:
-  # This public integration includes reviewed durable questions and their original identity consumers.
-  HOST_COMMIT: ${{ inputs.host_commit || 'c4b853c3068013ad86a8e059bae0472712d392ea' }}
+  # This public preparation includes complete learning APIs and durable questions; bind the exact collection below.
+  HOST_COMMIT: ${{ inputs.host_commit || 'b2465fd3746ac22d143aa0343d3c24643f847a83' }}
 
 jobs:
   integration:
