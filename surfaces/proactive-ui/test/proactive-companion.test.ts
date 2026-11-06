@@ -594,8 +594,8 @@ it.each(interactionViewports)('keeps the mobile question in its existing bubble 
   await wrapper.get('.uq-submit-btn').trigger('click');
   const next = { ...question, invocationId: 'attempt:2:1', step: 2, questions: [{ id: 'next', question: '新的确认' }] };
   pending.callbacks.onUserQuestion?.(next); saved(); await flushPromises();
-  expect(submitAnswers.mock.calls[0]?.slice(0, 2)).toEqual([question.turnId, [{ id: 'topic', selected: ['A'], custom: '保留补充说明' }]]);
-  expect(submitAnswers.mock.calls[0]?.[2]).toBeInstanceOf(AbortSignal);
+  expect(submitAnswers).toHaveBeenCalledWith(question.turnId, [{ id: 'topic', selected: ['A'], custom: '保留补充说明' }], expect.any(AbortSignal),
+    { attemptId: question.attemptId, invocationId: question.invocationId, step: question.step });
   expect(wrapper.get('.pc-dialogue-box .pc-interaction').text()).toContain('新的确认');
   expect(wrapper.getComponent({ name: 'UserQuestionComposer' }).vm.$).toBe(composer);
   expect((wrapper.get('.pc-whisper-input textarea').element as HTMLTextAreaElement).value).toBe('稍后再发的草稿');
@@ -653,8 +653,10 @@ it.each([
   { code: undefined, message: '暂时无法确认提交结果，请再试一次。', disabled: false },
 ])('shows one scoped mobile submission notice for $code', async ({ code, message, disabled }) => {
   const submitAnswers = vi.fn().mockRejectedValue(code ? new AervoxHttpError(409, 'native', { code, message: 'private transport details' }) : new Error('private transport details'));
-  const { wrapper } = await questionSubmissionSurface(submitAnswers);
+  const { wrapper, question } = await questionSubmissionSurface(submitAnswers);
   await wrapper.get('.uq-submit-btn').trigger('click'); await flushPromises();
+  expect(submitAnswers).toHaveBeenCalledWith(question.turnId, [{ id: 'topic', selected: ['A'], custom: '保留补充说明' }], expect.any(AbortSignal),
+    { attemptId: question.attemptId, invocationId: question.invocationId, step: question.step });
   expect(wrapper.findAll('.pc-dialogue-box .uq-feedback')).toHaveLength(1);
   expect(wrapper.get('.uq-feedback').text()).toBe(message);
   expect(wrapper.find('.pc-feedback').exists()).toBe(false);
@@ -672,6 +674,8 @@ it('preserves a failed original question replay while isolating the next questio
   const composer = wrapper.getComponent({ name: 'UserQuestionComposer' }).vm.$;
   await wrapper.get('.uq-submit-btn').trigger('click'); await flushPromises();
   pending.callbacks.onUserQuestion?.({ ...question }); await flushPromises();
+  expect(submitAnswers).toHaveBeenNthCalledWith(1, question.turnId, [{ id: 'topic', selected: ['A'], custom: '保留补充说明' }], expect.any(AbortSignal),
+    { attemptId: question.attemptId, invocationId: question.invocationId, step: question.step });
   expect(wrapper.get('.uq-feedback').text()).toBe('暂时无法确认提交结果，请再试一次。');
   expect((wrapper.get('.uq-custom-input input').element as HTMLInputElement).value).toBe('保留补充说明');
   const next = { ...question, invocationId: 'attempt:2:1', step: 2, questions: [{ id: 'next', question: '新的问题' }] };
@@ -680,6 +684,8 @@ it('preserves a failed original question replay while isolating the next questio
   expect(wrapper.getComponent({ name: 'UserQuestionComposer' }).vm.$).toBe(composer);
   await wrapper.get('.uq-custom-input input').setValue('新的回答');
   await wrapper.get('.uq-submit-btn').trigger('click'); await flushPromises();
+  expect(submitAnswers).toHaveBeenNthCalledWith(2, next.turnId, [{ id: 'next', selected: [], custom: '新的回答' }], expect.any(AbortSignal),
+    { attemptId: next.attemptId, invocationId: next.invocationId, step: next.step });
   expect(wrapper.get('.uq-feedback').text()).toBe('问题已结束，无法继续作答。');
   expect(wrapper.get('.pc-dialogue-box .pc-interaction').text()).toContain('新的问题');
 });
@@ -689,6 +695,8 @@ it('does not attach a late original save failure to a newer mobile question', as
   const submitAnswers = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectSave = reject; }));
   const { wrapper, pending, question } = await questionSubmissionSurface(submitAnswers);
   await wrapper.get('.uq-submit-btn').trigger('click');
+  expect(submitAnswers).toHaveBeenCalledWith(question.turnId, [{ id: 'topic', selected: ['A'], custom: '保留补充说明' }], expect.any(AbortSignal),
+    { attemptId: question.attemptId, invocationId: question.invocationId, step: question.step });
   const next = { ...question, invocationId: 'attempt:2:1', step: 2, questions: [{ id: 'next', question: '新的问题' }] };
   pending.callbacks.onUserQuestion?.(next); rejectSave(new AervoxHttpError(409, 'native', { code: 'QUESTION_EXPIRED' })); await flushPromises();
   expect(wrapper.find('.uq-feedback').exists()).toBe(false);
@@ -703,6 +711,8 @@ it('keeps a newer unavailable question notice when the original retry succeeds',
   const { wrapper, pending, question } = await questionSubmissionSurface(submitAnswers);
   await wrapper.get('.uq-submit-btn').trigger('click'); await flushPromises();
   await wrapper.get('.uq-submit-btn').trigger('click');
+  for (const call of [1, 2]) expect(submitAnswers).toHaveBeenNthCalledWith(call, question.turnId, [{ id: 'topic', selected: ['A'], custom: '保留补充说明' }], expect.any(AbortSignal),
+    { attemptId: question.attemptId, invocationId: question.invocationId, step: question.step });
   const next = { ...question, invocationId: 'attempt:2:1', step: 2, identityStatus: 'identity_unavailable' as const, questions: [{ id: 'next', question: '新的问题' }] };
   pending.callbacks.onUserQuestion?.(next); save(); await flushPromises();
   expect(wrapper.get('.uq-feedback').text()).toBe('旧问题无法继续作答。');
@@ -712,8 +722,11 @@ it('keeps a newer unavailable question notice when the original retry succeeds',
 
 it('keeps receive-recovery feedback separate after the mobile answer was saved', async () => {
   observeTurn.mockRejectedValueOnce(new Error('private observer details'));
-  const { wrapper } = await questionSubmissionSurface(vi.fn().mockResolvedValue(undefined));
+  const submitAnswers = vi.fn().mockResolvedValue(undefined);
+  const { wrapper, question } = await questionSubmissionSurface(submitAnswers);
   await wrapper.get('.uq-submit-btn').trigger('click'); await flushPromises();
+  expect(submitAnswers).toHaveBeenCalledWith(question.turnId, [{ id: 'topic', selected: ['A'], custom: '保留补充说明' }], expect.any(AbortSignal),
+    { attemptId: question.attemptId, invocationId: question.invocationId, step: question.step });
   expect(wrapper.find('.uq-feedback').exists()).toBe(false);
   expect(wrapper.get('.pc-feedback').text()).toContain('回答已保存，接收回复失败。可以恢复接收。');
   expect(wrapper.get('.pc-resume').text()).toBe('恢复接收回复');
@@ -1887,7 +1900,7 @@ it.each(['unknown', 'approval', 'question'])('allows diary reads while blocking 
   streamTurn.mockImplementationOnce(async (_id, _text, callbacks: TurnCallbacks, options: StreamTurnOptions) => {
     if (state === 'unknown') throw new TypeError('unknown acceptance');
     await options.onAccepted?.('turn_wait_approval');
-    if (state === 'question') callbacks.onUserQuestion!({ turnId: 'turn_wait_approval', step: 1, questions: [{ id: 'pending_question', question: '请确认方向' }] });
+    if (state === 'question') callbacks.onUserQuestion!({ turnId: 'turn_wait_approval', attemptId: 'diary-attempt', invocationId: 'diary-attempt:1:1', identityStatus: 'available', step: 1, questions: [{ id: 'pending_question', question: '请确认方向' }] });
     else callbacks.onToolApproval!({ turnId: 'turn_wait_approval', approvalId: 'approval_wait_diary', toolName: 'device_tap', argumentsHash: 'argument_hash' });
   });
   const wrapper = await mountSurface('desktop');

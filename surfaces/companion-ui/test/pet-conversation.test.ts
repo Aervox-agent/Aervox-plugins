@@ -67,7 +67,7 @@ it('submits all questions and preserves a newer prompt while the old answer is i
   expect(wrapper.get('.pet-question').text()).not.toContain('选主题');
 });
 it('cancels pending user input through the server without auto-answering', async () => {
-  streamTurn.mockImplementation(async (_s,_c,cb,options)=>{await options.onAccepted('turn');cb.onUserQuestion({turnId:'turn',questions:[{id:'q',question:'请选择'}]});cb.onDone();});
+  streamTurn.mockImplementation(async (_s,_c,cb,options)=>{await options.onAccepted('turn');cb.onUserQuestion({turnId:'turn',attemptId:'cancel-attempt',invocationId:'cancel-attempt:1:1',identityStatus:'available',step:1,questions:[{id:'q',question:'请选择'}]});cb.onDone();});
   const wrapper=await pet();
   await wrapper.get('.pet-stop').trigger('click');await flushPromises();
   expect(request).toHaveBeenCalledWith('POST','/v1/turns/turn/cancel',{},expect.any(Object));
@@ -75,7 +75,7 @@ it('cancels pending user input through the server without auto-answering', async
 });
 it('keeps partial output visible after a terminal interruption and clears stale questions', async()=>{
   streamTurn.mockImplementationOnce(async (_s,_c,cb,options)=>{
-    await options.onAccepted('turn');cb.onDelta('保留的正文。');cb.onUserQuestion({turnId:'turn',questions:[{id:'q',question:'旧问题'}]});cb.onDone();
+    await options.onAccepted('turn');cb.onDelta('保留的正文。');cb.onUserQuestion({turnId:'turn',attemptId:'interrupted-attempt',invocationId:'interrupted-attempt:1:1',identityStatus:'available',step:1,questions:[{id:'q',question:'旧问题'}]});cb.onDone();
     await cb.onEvent({eventId:'done',turnId:'turn',sequence:3,eventType:'done',data:{status:'Interrupted',reason:'turn_timeout',isComplete:false}});
   });
   const wrapper=await pet();
@@ -100,8 +100,10 @@ it.each([
   { code: undefined, message: '暂时无法确认提交结果，请再试一次。', disabled: false },
 ])('shows one scoped pet submission notice for $code', async ({ code, message, disabled }) => {
   submitQuestionAnswers.mockRejectedValueOnce(code ? new AervoxHttpError(409, 'native', { code, message: 'private transport details' }) : new Error('private transport details'));
-  const { wrapper } = await petQuestion();
+  const { wrapper, question } = await petQuestion();
   await wrapper.get('.uq-submit-btn').trigger('click'); await flushPromises();
+  expect(submitQuestionAnswers).toHaveBeenCalledWith(question.turnId, [{ id: 'topic', selected: ['A'], custom: '保留补充说明' }], expect.any(AbortSignal),
+    { attemptId: question.attemptId, invocationId: question.invocationId, step: question.step });
   expect(wrapper.findAll('.pet-question .uq-feedback')).toHaveLength(1);
   expect(wrapper.get('.uq-feedback').text()).toBe(message);
   expect(wrapper.find('.pet-turn-feedback').exists()).toBe(false);
@@ -115,6 +117,8 @@ it('keeps a pet question replay notice and resets it for the next original quest
   const { wrapper, question, callbacks } = await petQuestion();
   await wrapper.get('.uq-submit-btn').trigger('click'); await flushPromises();
   callbacks().onUserQuestion?.({ ...question }); await flushPromises();
+  expect(submitQuestionAnswers).toHaveBeenCalledWith(question.turnId, [{ id: 'topic', selected: ['A'], custom: '保留补充说明' }], expect.any(AbortSignal),
+    { attemptId: question.attemptId, invocationId: question.invocationId, step: question.step });
   expect(wrapper.get('.uq-feedback').text()).toBe('暂时无法确认提交结果，请再试一次。');
   expect((wrapper.get('.uq-custom-input input').element as HTMLInputElement).value).toBe('保留补充说明');
   const next = { ...question, invocationId: 'attempt:2:1', step: 2, questions: [{ id: 'next', question: '新的问题' }] };
@@ -127,6 +131,8 @@ it('does not attach a late pet save failure to the next question', async () => {
   submitQuestionAnswers.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectSave = reject; }));
   const { wrapper, question, callbacks } = await petQuestion();
   await wrapper.get('.uq-submit-btn').trigger('click');
+  expect(submitQuestionAnswers).toHaveBeenCalledWith(question.turnId, [{ id: 'topic', selected: ['A'], custom: '保留补充说明' }], expect.any(AbortSignal),
+    { attemptId: question.attemptId, invocationId: question.invocationId, step: question.step });
   const next = { ...question, invocationId: 'attempt:2:1', step: 2, questions: [{ id: 'next', question: '新的问题' }] };
   callbacks().onUserQuestion?.(next); rejectSave(new AervoxHttpError(409, 'native', { code: 'QUESTION_EXPIRED' })); await flushPromises();
   expect(wrapper.find('.uq-feedback').exists()).toBe(false);
@@ -138,6 +144,8 @@ it('preserves a newer pet question notice when an original retry succeeds', asyn
   submitQuestionAnswers.mockRejectedValueOnce(new Error('offline')).mockImplementationOnce(() => new Promise<void>(resolve => { save = resolve; }));
   const { wrapper, question, callbacks } = await petQuestion();
   await wrapper.get('.uq-submit-btn').trigger('click'); await flushPromises(); await wrapper.get('.uq-submit-btn').trigger('click');
+  for (const call of [1, 2]) expect(submitQuestionAnswers).toHaveBeenNthCalledWith(call, question.turnId, [{ id: 'topic', selected: ['A'], custom: '保留补充说明' }], expect.any(AbortSignal),
+    { attemptId: question.attemptId, invocationId: question.invocationId, step: question.step });
   const next = { ...question, invocationId: 'attempt:2:1', step: 2, identityStatus: 'identity_unavailable' as const, questions: [{ id: 'next', question: '新的问题' }] };
   callbacks().onUserQuestion?.(next); save(); await flushPromises();
   expect(wrapper.get('.uq-feedback').text()).toBe('旧问题无法继续作答。');
