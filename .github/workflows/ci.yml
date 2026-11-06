@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 env:
-  # Read-only catalog ports, authoritative tool permits and paired root lock are public in this host integration.
-  HOST_COMMIT: ${{ inputs.host_commit || '10a2a46a204cb013579ed123f8906212de1a39aa' }}
+  # This public integration includes the reviewed companion home, read-only catalogs, authoritative permits and paired root lock.
+  HOST_COMMIT: ${{ inputs.host_commit || '529fac9c81c0ba63ba69278540496a556f143ee3' }}
 
 jobs:
   integration:
