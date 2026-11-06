@@ -17,7 +17,7 @@ permissions:
 
 env:
   # This public integration includes reviewed durable questions and their original identity consumers.
-  HOST_COMMIT: ${{ inputs.host_commit || '8c3039970ee8a032a723fe9aa6fc5e804c6901e1' }}
+  HOST_COMMIT: ${{ inputs.host_commit || 'c4b853c3068013ad86a8e059bae0472712d392ea' }}
 
 jobs:
   integration:
