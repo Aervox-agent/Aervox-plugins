@@ -76,6 +76,13 @@ test('published ecosystem bundles require the declared category and truthful min
   value.requires.hostApiVersion.min = '1.0.0';
   fixture = releaseFixture(value);
   await assert.rejects(verifyReleaseAssets(fixture.release, fixture.bytes, fixture.text), /Host API/);
+  value.requires.hostApiVersion.min = '1.1.0';
+  value.metadata.installation = 'optional';
+  fixture = releaseFixture(value);
+  await assert.rejects(verifyReleaseAssets(fixture.release, fixture.bytes, fixture.text), /installation policy/);
+  value.requires.hostApiVersion.min = '1.2.0';
+  fixture = releaseFixture(value);
+  assert.equal((await verifyReleaseAssets(fixture.release, fixture.bytes, fixture.text)).manifest.metadata.installation, 'optional');
 });
 
 test('history file ownership and structural breaking declarations cannot be forged by the generator input', async t => {

@@ -75,6 +75,8 @@ Tool `name` 使用 `<slug>_<action>`，全局名称须唯一；宿主对工具 *
 
 ## 3. 文件组织与分发
 
+`metadata.installation` 自 Host API 1.2.0 起可声明 `preinstalled` 或 `optional`。省略保持出厂源预装行为；`optional` 的出厂源只显示在市场，不创建安装、配置或技能记录，用户须显式安装。停用保持安装记录和用户开关；卸载后重启不会重新预装。显式 Bundle 安装不受此出厂策略阻止，策略变化须按破坏性变更评审并递增 MAJOR。使用此字段的新包须声明 Host API 至少 1.2.0。
+
 ### 3.1 集合仓布局
 
 ```text
@@ -133,7 +135,7 @@ Aervox-plugins/
 
 ## 4. 清单、配置与 Page
 
-下面三份文件构成可由配对宿主真实校验器验证的完整 Bundle。本批声明包 Host API 为 1.1.0，新增官方包声明 `>=1.1.0 <2.0.0`；旧 v1 包的默认 `[1.0.0, 2.0.0)` 仍兼容读取。Metadata 新增 category/tags/breaking，不通过忽略未知字段假装成功。
+下面三份文件构成可由配对宿主真实校验器验证的完整 Bundle。当前声明包 Host API 为 1.2.0；已有 `>=1.1.0 <2.0.0` 官方包及旧 v1 包的默认 `[1.0.0, 2.0.0)` 仍兼容读取。使用可选安装字段的包须声明 `>=1.2.0 <2.0.0`。Metadata 包含 category/tags/breaking/installation，不通过忽略未知字段假装成功。
 
 <!-- aervox-bundle-file: plugin.manifest.json -->
 
