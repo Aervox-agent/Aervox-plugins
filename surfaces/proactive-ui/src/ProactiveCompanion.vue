@@ -1837,5 +1837,7 @@ onBeforeUnmount(() => {
   .proactive-companion[data-design-system="material3"] > .pc-whisper { grid-column: 2; grid-row: 6; padding-inline: 24px; }
   .proactive-companion[data-design-system="material3"] .pc-whisper-input { max-width: none; }
   .proactive-companion[data-design-system="material3"].pc-notice--compact .pc-deck-track { flex-basis: auto; height: 100%; }
+  .proactive-companion[data-design-system="material3"].pc-notice--compact > .pc-current-session { display: none; }
+  .proactive-companion[data-design-system="material3"].pc-notice--compact .pc-model-configuration-notice { min-height: 24px; }
 }
 </style>
