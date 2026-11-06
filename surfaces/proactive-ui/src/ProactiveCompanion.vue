@@ -53,6 +53,7 @@ const pluginLoadNotice = ref(false);
 const material3 = useMaterial3();
 const mobileScreen = ref<HTMLElement>();
 const dialogueFeedbackRegion = ref<HTMLElement>();
+const mobileHomeActionsRegion = ref<HTMLElement>();
 // The Android composition root registers the official Material Web elements.
 // Other hosts keep their existing native controls and visual language.
 const buttonTag = (materialTag: string) => material3 ? materialTag : 'button';
@@ -1039,6 +1040,7 @@ onBeforeUnmount(() => {
     <section v-if="material3" class="pc-deck-slide" aria-label="工具">
       <div class="pc-dialogue-name">工具</div>
       <div class="pc-dialogue-box pc-deck-box pc-deck-box--tools" :class="{ 'pc-deck-box--tools-error': pluginLoadError }">
+        <div ref="mobileHomeActionsRegion" class="pc-home-actions-region" />
         <div v-if="pluginLoadError" class="pc-deck-plugin-error">
           <p role="alert">扩展加载失败。</p>
           <component :is="'md-text-button'" type="button" class="pc-plugin-retry pc-feedback-action" @click="refreshPluginUI().catch(() => undefined)">重试加载</component>
@@ -1082,6 +1084,7 @@ onBeforeUnmount(() => {
       <component :is="buttonTag('md-text-button')" type="button" :disabled="interactionBusy || sending" @click="decideApproval('denied')">拒绝</component>
     </section>
 
+    <Teleport :to="mobileHomeActionsRegion" :disabled="!material3 || !mobileHomeActionsRegion">
     <nav class="pc-home-nav" aria-label="首页入口">
       <button type="button" class="pc-home-entry" :class="{ 'pc-home-entry--material3': material3 }" :disabled="!resumeSession" @click="openResume">
         <span>接着上次</span><small>{{ resumeSession ? `${resumeSession.title} · ${relativeDay(resumeSession.updatedAt)}` : '尚未选择会话' }}</small>
@@ -1090,6 +1093,7 @@ onBeforeUnmount(() => {
       <button type="button" class="pc-home-entry" :class="{ 'pc-home-entry--material3': material3 }" @click="sessionsOpen = true"><span>记录</span><small>已保存的会话</small></button>
       <button type="button" class="pc-home-entry" :class="{ 'pc-home-entry--material3': material3 }" @click="openDiary"><span>日记</span><small>今天与往期</small></button>
     </nav>
+    </Teleport>
     <p v-if="pluginLoadError && !material3" class="pc-mobile-session-feedback" role="alert">扩展加载失败。<button type="button" @click="refreshPluginUI().catch(() => undefined)">重试加载</button></p>
     </main>
 
@@ -1253,8 +1257,9 @@ onBeforeUnmount(() => {
 .pc-home-entry--material3:focus-visible { outline-color: var(--md-sys-color-primary); }
 @media (max-width: 499px) { .pc-home-nav { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .proactive-companion[data-design-system="material3"] .pc-home-nav {
-  grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px;
+  grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px;
 }
+.pc-home-actions-region { width: 100%; flex-shrink: 0; }
 .proactive-companion[data-design-system="material3"] .pc-home-nav > .pc-home-entry {
   min-height: 56px; gap: 4px; padding: 8px 6px;
 }
@@ -1782,4 +1787,55 @@ onBeforeUnmount(() => {
 .pc-notice--compact .pc-dialogue-box--notice .pc-dialogue-foot { display: none; }
 .proactive-companion[data-design-system="material3"].pc-notice--compact .pc-dialogue-box { padding: 12px 16px; }
 .proactive-companion[data-design-system="material3"] .pc-deck-box--tools { overflow-y: auto; overscroll-behavior-y: contain; justify-content: flex-start; }
+.proactive-companion[data-design-system="material3"] .pc-deck-tools { margin-top: 12px; flex-shrink: 0; }
+
+/* Tablets and landscape keep a dedicated character column. The same deck and
+ * draft remain mounted while resizing, so switching layouts keeps their state. */
+@media (min-width: 600px) {
+  .proactive-companion[data-design-system="material3"][data-platform="mobile"] {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+    grid-template-rows: auto auto minmax(0, 1fr) auto auto auto;
+  }
+  .proactive-companion[data-design-system="material3"] > .pc-header { grid-column: 1 / -1; grid-row: 1; }
+  .proactive-companion[data-design-system="material3"] > .pc-current-session { grid-column: 2; grid-row: 2; margin: 0 24px 12px; }
+  .proactive-companion[data-design-system="material3"][data-platform="mobile"] > .pc-content { display: contents; }
+  .proactive-companion[data-design-system="material3"][data-platform="mobile"] .pc-stage {
+    display: grid; grid-column: 1; grid-row: 2 / 7;
+    align-self: stretch; align-items: center; position: relative;
+    width: 100%; height: 100%; min-height: 0; padding: 0 12px;
+    overflow: hidden;
+  }
+  .proactive-companion[data-design-system="material3"][data-platform="mobile"] .pc-pet-wrap {
+    width: 100%; height: min(100%, 66vw); max-width: 100%; min-height: 0;
+  }
+  .proactive-companion[data-design-system="material3"][data-platform="mobile"] .pc-deck-track {
+    display: flex; grid-column: 2; grid-row: 3; gap: 12px;
+    width: auto; height: 100%; min-height: 0; margin: 0 24px;
+    overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain;
+    scroll-snap-type: x mandatory; scrollbar-width: none;
+    padding-block-end: 2px;
+  }
+  .proactive-companion[data-design-system="material3"] .pc-deck-track::-webkit-scrollbar { display: none; }
+  .proactive-companion[data-design-system="material3"][data-platform="mobile"] .pc-deck-slide {
+    flex: 0 0 100%; display: flex; flex-direction: column;
+    width: 100%; height: 100%; min-width: 0; max-width: none;
+    grid-column: auto; grid-row: auto; margin: 0; align-self: stretch;
+    scroll-snap-align: center; scroll-snap-stop: always;
+  }
+  .proactive-companion[data-design-system="material3"] .pc-deck-slide > .pc-dialogue-name { align-self: flex-start; }
+  .proactive-companion[data-design-system="material3"] .pc-deck-slide > .pc-dialogue-box {
+    flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain;
+  }
+  .proactive-companion[data-design-system="material3"] .pc-deck-slide > .pc-dialogue-box--notice { overflow: hidden; }
+  .proactive-companion[data-design-system="material3"] .pc-deck-box { display: flex; flex-direction: column; }
+  .proactive-companion[data-design-system="material3"] .pc-deck-sessions { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+  .proactive-companion[data-design-system="material3"][data-platform="mobile"] .pc-deck-dots {
+    display: flex; grid-column: 2; grid-row: 4; justify-content: center; gap: 2px; margin-top: 8px;
+  }
+  .proactive-companion[data-design-system="material3"] .pc-interaction { grid-column: 2; grid-row: 5; max-height: 35dvh; overflow-y: auto; }
+  .proactive-companion[data-design-system="material3"] > .pc-whisper { grid-column: 2; grid-row: 6; padding-inline: 24px; }
+  .proactive-companion[data-design-system="material3"] .pc-whisper-input { max-width: none; }
+  .proactive-companion[data-design-system="material3"].pc-notice--compact .pc-deck-track { flex-basis: auto; height: 100%; }
+}
 </style>

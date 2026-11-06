@@ -624,12 +624,15 @@ it('opts into official Material controls only when the mobile composition root p
   expect(mobile.get('.proactive-companion').attributes('data-design-system')).toBe('material3');
   expect(mobile.findAll('md-icon-button[aria-label="打开设置"]')).toHaveLength(1);
   expect(mobile.findAll('.pc-home-nav .pc-home-entry')).toHaveLength(4);
+  expect(mobile.find('.pc-content > .pc-home-nav').exists()).toBe(false);
+  expect(mobile.findAll('.pc-deck-box--tools .pc-home-nav .pc-home-entry')).toHaveLength(4);
   expect(mobile.find('.pc-whisper-input textarea').exists()).toBe(true);
   expect(mobile.find('[aria-label="回到完整工作台"]').exists()).toBe(false);
   const desktop = await mountSurface('desktop');
   expect(desktop.get('.proactive-companion').attributes('data-design-system')).toBeUndefined();
   expect(desktop.findAll('button.pc-quiet-btn')).toHaveLength(2);
   expect(desktop.find('md-ripple').exists()).toBe(false);
+  expect(desktop.find('.pc-content > .pc-home-nav').exists()).toBe(true);
 });
 
 it('retains native input IME, its accessible name and real submission without a composer label row', async () => {
