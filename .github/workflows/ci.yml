@@ -17,7 +17,7 @@ permissions:
 
 env:
   # Validate companion home against its paired, public host integration commit.
-  HOST_COMMIT: ${{ inputs.host_commit || '30147c568a4c88b8d2bfc5b18965ff56232c9f43' }}
+  HOST_COMMIT: ${{ inputs.host_commit || 'e0b1154c01ef373e21e4c5b668265c5cb9991d5c' }}
 
 jobs:
   integration:
