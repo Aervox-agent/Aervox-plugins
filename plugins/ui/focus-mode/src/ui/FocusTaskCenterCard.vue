@@ -8,12 +8,12 @@ const { openLearningView } = useFocusModeState();
 const { navigation, cards } = useUIPluginContext();
 
 function goToReview() {
-  navigation.closeTaskCenter();
+  navigation.closeTaskCenter?.();
   openLearningView('mistake');
 }
 
 function goToStudy() {
-  navigation.closeTaskCenter();
+  navigation.closeTaskCenter?.();
   openLearningView('study');
 }
 </script>

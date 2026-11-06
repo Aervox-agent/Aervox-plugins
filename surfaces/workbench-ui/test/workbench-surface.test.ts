@@ -60,7 +60,7 @@ it('keeps extension registries and cleanup separate across mounted workbenches',
     id: 'fixture-extension',
     setup(registry, context) {
       const index = registries.push(registry) - 1;
-      context!.navigation.setQuietStartup(true);
+      context!.navigation.setQuietStartup!(true);
       return cleanups[index];
     },
   };
@@ -94,7 +94,7 @@ it.each(['web', 'desktop'] as const)('approval on %s observes the original Turn 
     streamTurn, observeTurn, decideToolApproval, submitQuestionAnswers: vi.fn(),
   } });
   const plugin: BuiltinUIPlugin = { id:'fixture-extension', setup(_registry, context) {
-    context!.navigation.setQuietStartup(true);
+    context!.navigation.setQuietStartup!(true);
     void context!.sendMessage('save');
   }};
   const wrapper = mount(UISurfaceHost, {props:{ plugin:definition,surface:'main',platform,viewProps:{plugins:[plugin],showCompanion:false}}});
@@ -114,7 +114,7 @@ it.each(['web', 'desktop'] as const)('recovers %s observation into the same repl
   });
   const observeTurn = vi.fn(async (_turn,cb)=>{cb.onDelta('继续正文。');cb.onDone();});
   configureAervoxClient({transport:{request:vi.fn(async <T>(_m:string,path:string)=>({items:path==='/v1/plugins'?[fixturePlugin]:[]}) as T),streamTurn,observeTurn,decideToolApproval:vi.fn(),submitQuestionAnswers:vi.fn()}});
-  const plugin: BuiltinUIPlugin={id:'fixture-extension',setup(_registry,context){context!.navigation.setQuietStartup(true);void context!.sendMessage('你好');}};
+  const plugin: BuiltinUIPlugin={id:'fixture-extension',setup(_registry,context){context!.navigation.setQuietStartup!(true);void context!.sendMessage('你好');}};
   const wrapper=mount(UISurfaceHost,{props:{plugin:definition,surface:'main',platform,viewProps:{plugins:[plugin],showCompanion:false}}});
   await vi.waitFor(()=>expect(wrapper.text()).toContain('恢复接收回复'),{timeout:5000});
   const retry=wrapper.findAll('button').find(button=>button.text()==='恢复接收回复')!;
@@ -137,7 +137,7 @@ it.each(['standard','companion'])('answers complete questions in %s mode and kee
   let saved!:()=>void;
   const submitQuestionAnswers=vi.fn(()=>new Promise<void>(resolve=>{saved=resolve;}));
   configureAervoxClient({transport:{request:vi.fn(async <T>(_m:string,path:string)=>({items:path==='/v1/plugins'?[fixturePlugin]:[]}) as T),streamTurn,observeTurn:vi.fn(),decideToolApproval:vi.fn(),submitQuestionAnswers}});
-  const plugin:BuiltinUIPlugin={id:'fixture-extension',setup(_registry,context){context!.navigation.setQuietStartup(true);void context!.sendMessage('帮我选择');}};
+  const plugin:BuiltinUIPlugin={id:'fixture-extension',setup(_registry,context){context!.navigation.setQuietStartup!(true);void context!.sendMessage('帮我选择');}};
   const wrapper=mount(UISurfaceHost,{props:{plugin:definition,surface:'main',platform:'web',viewProps:{plugins:[plugin],showCompanion:false}}});
   await vi.waitFor(()=>expect(wrapper.find('.uq-submit-btn').exists()).toBe(true),{timeout:5000});
   await wrapper.findAll('.uq-option-btn')[0]!.trigger('click');await wrapper.findAll('.uq-option-btn')[1]!.trigger('click');
@@ -156,7 +156,7 @@ it('preserves partial output and reports terminal interruption separately from c
     await cb.onEvent({eventId:'done',turnId:'turn',sequence:2,eventType:'done',data:{status:'Interrupted',reason:'max_steps',isComplete:false}});
   });
   configureAervoxClient({transport:{request:vi.fn(async <T>(_m:string,path:string)=>({items:path==='/v1/plugins'?[fixturePlugin]:[]}) as T),streamTurn,observeTurn:vi.fn(),decideToolApproval:vi.fn(),submitQuestionAnswers:vi.fn()}});
-  const plugin:BuiltinUIPlugin={id:'fixture-extension',setup(_registry,context){context!.navigation.setQuietStartup(true);void context!.sendMessage('长任务');}};
+  const plugin:BuiltinUIPlugin={id:'fixture-extension',setup(_registry,context){context!.navigation.setQuietStartup!(true);void context!.sendMessage('长任务');}};
   const wrapper=mount(UISurfaceHost,{props:{plugin:definition,surface:'main',platform:'web',viewProps:{plugins:[plugin],showCompanion:false}}});
   await vi.waitFor(()=>expect(wrapper.text()).toContain('本次回复未完成'),{timeout:5000});
   expect(wrapper.text()).toContain('保留这段正文。');
@@ -201,12 +201,198 @@ function pending<T>() {
   return { promise: new Promise<T>(done => { resolve = done; }), resolve: (value: T) => resolve(value) };
 }
 
+const pagedSessions = [savedSessions[1]!, ...Array.from({ length: 101 }, (_, index) => ({
+  ...savedSessions[1]!, id: `saved-${index}`, title: `保存会话${index}`,
+})), savedSessions[0]!];
+// Keep the real session list and selection handlers; happy-dom cannot measure
+// 100 independent Popper menus efficiently. Browser QA covers their geometry.
+const pagedListStubs = {
+  ElDropdown: defineComponent({ setup: (_props, { slots }) => () => h('div', slots.default?.()) }),
+  ElDropdownMenu: true,
+  ElDropdownItem: true,
+};
+
+it.each(['standard', 'companion'])('restores the selected session beyond a 100-row page in %s mode without creating a Turn', async mode => {
+  await definition.load();
+  localStorage.setItem('aervox-workbench-mode', mode);
+  const request = vi.fn(async <T>(method: string, path: string) => {
+    if (method === 'GET' && path.split('?')[0] === '/v1/sessions') {
+      const params = new URL(path, 'http://localhost').searchParams;
+      const offset = Number(params.get('offset') ?? 0);
+      return { items: pagedSessions.slice(offset, offset + Number(params.get('limit') ?? 100)) } as T;
+    }
+    if (path === '/v1/sessions/a') return savedSessions[0] as T;
+    if (path.startsWith('/v1/sessions/a/history')) return savedPage('a', '第一页外恢复的正文') as T;
+    return { items: path === '/v1/plugins' ? [fixturePlugin] : [] } as T;
+  });
+  const streamTurn = vi.fn();
+  configureAervoxClient({ sessionId: 'a', transport: { request, streamTurn, submitQuestionAnswers: vi.fn(), decideToolApproval: vi.fn() } });
+  const plugin: BuiltinUIPlugin = { id: 'fixture-extension', setup(_registry, ctx) { ctx!.navigation.setQuietStartup!(true); } };
+  const wrapper = mount(UISurfaceHost, { global: { stubs: pagedListStubs }, props: { plugin: definition, surface: 'main', platform: 'web', viewProps: { showCompanion: false, plugins: [plugin] } } });
+  await vi.waitFor(() => expect(wrapper.text()).toContain('第一页外恢复的正文'));
+  expect(pagedSessions).toHaveLength(103);
+  expect(getSessionId()).toBe('a');
+  if (mode === 'standard') expect(wrapper.get('.session-active-title').text()).toBe('会话A');
+  expect(request).toHaveBeenCalledWith('GET', '/v1/sessions?limit=100&offset=0');
+  expect(request).toHaveBeenCalledWith('GET', '/v1/sessions/a');
+  expect(wrapper.find('.session-identity-notice').exists()).toBe(false);
+  expect(streamTurn).not.toHaveBeenCalled();
+  expect(request.mock.calls.filter(([method]) => method === 'POST')).toEqual([]);
+});
+
+it('waits for the restored session identity before allowing a submission', async () => {
+  let context!: UIPluginContext;
+  const identity = pending<typeof savedSessions[number]>();
+  const request = vi.fn(async <T>(_method: string, path: string) => {
+    if (path.split('?')[0] === '/v1/sessions') return { items: [savedSessions[1]] } as T;
+    if (path === '/v1/sessions/a') return await identity.promise as T;
+    if (path.startsWith('/v1/sessions/a/history')) return savedPage('a', '身份确认后的正文') as T;
+    return { items: path === '/v1/plugins' ? [fixturePlugin] : [] } as T;
+  });
+  const streamTurn = vi.fn(async (_id, _text, callbacks, options) => { await options.onAccepted('verified-a'); callbacks.onDelta('收到'); callbacks.onDone(); });
+  configureAervoxClient({ sessionId: 'a', transport: { request, streamTurn, submitQuestionAnswers: vi.fn(), decideToolApproval: vi.fn() } });
+  const plugin: BuiltinUIPlugin = { id: 'fixture-extension', setup(_registry, ctx) { context = ctx!; ctx!.navigation.setQuietStartup!(true); } };
+  const wrapper = mount(UISurfaceHost, { props: { plugin: definition, surface: 'main', platform: 'web', viewProps: { showCompanion: false, plugins: [plugin] } } });
+  await vi.waitFor(() => expect(request).toHaveBeenCalledWith('GET', '/v1/sessions/a'));
+  expect(wrapper.get('.session-identity-notice').text()).toContain('正在确认当前会话');
+  expect(wrapper.get('.standard-composer-wrap').attributes('inert')).toBeDefined();
+  await context.sendMessage('身份回执之前的请求');
+  expect(streamTurn).not.toHaveBeenCalled();
+  expect(request.mock.calls.some(([method]) => method === 'POST')).toBe(false);
+  identity.resolve(savedSessions[0]!);
+  await vi.waitFor(() => expect(wrapper.text()).toContain('身份确认后的正文'));
+  expect(wrapper.find('.session-identity-notice').exists()).toBe(false);
+  expect(wrapper.get('.standard-composer-wrap').attributes('inert')).toBeUndefined();
+  await context.sendMessage('身份确认后的请求');
+  expect(streamTurn).toHaveBeenCalledWith('a', '身份确认后的请求', expect.any(Object), expect.any(Object));
+});
+
+it.each(['missing', 'unverified', 'list-failed'] as const)('blocks a %s restored identity until the user explicitly selects a valid session', async failure => {
+  let context!: UIPluginContext;
+  const request = vi.fn(async <T>(method: string, path: string) => {
+    if (path.split('?')[0] === '/v1/sessions') {
+      if (failure === 'list-failed') throw new AervoxHttpError(503, path, {});
+      return { items: [savedSessions[1]] } as T;
+    }
+    if (path === '/v1/sessions/a') throw new AervoxHttpError(failure === 'missing' ? 404 : 503, path, {});
+    if (path.startsWith('/v1/sessions/a/history')) throw new AervoxHttpError(404, path, {});
+    if (path.startsWith('/v1/sessions/b/history')) return savedPage('b', '合法B的正文') as T;
+    return { items: path === '/v1/plugins' ? [fixturePlugin] : [] } as T;
+  });
+  const streamTurn = vi.fn(async (_id, _text, callbacks, options) => { await options.onAccepted('valid-b'); callbacks.onDelta('B的新回复'); callbacks.onDone(); });
+  configureAervoxClient({ sessionId: 'a', transport: { request, streamTurn, submitQuestionAnswers: vi.fn(), decideToolApproval: vi.fn() } });
+  const plugin: BuiltinUIPlugin = { id: 'fixture-extension', setup(_registry, ctx) { context = ctx!; ctx!.navigation.setQuietStartup!(true); } };
+  const wrapper = mount(UISurfaceHost, { props: { plugin: definition, surface: 'main', platform: 'web', viewProps: { showCompanion: false, plugins: [plugin] } } });
+  await vi.waitFor(() => expect(wrapper.get('.session-identity-notice').text()).toContain(failure === 'missing' ? '已不存在' : '未能确认'));
+  expect(wrapper.get('.session-active-title').text()).not.toBe('新对话');
+  await context.sendMessage('不可用身份上的请求');
+  expect(getSessionId()).toBe('a');
+  expect(streamTurn).not.toHaveBeenCalled();
+  expect(request.mock.calls.some(([method]) => method === 'POST')).toBe(false);
+  if (failure === 'list-failed') {
+    // A successful list read on remount confirms B independently of the failed A read.
+    wrapper.unmount();
+    request.mockImplementation(async <T>(_method: string, path: string) => {
+      if (path.split('?')[0] === '/v1/sessions') return { items: savedSessions } as T;
+      if (path.startsWith('/v1/sessions/b/history')) return savedPage('b', '合法B的正文') as T;
+      return { items: path === '/v1/plugins' ? [fixturePlugin] : [] } as T;
+    });
+    setSessionId('b');
+    const recovered = mount(UISurfaceHost, { props: { plugin: definition, surface: 'main', platform: 'web', viewProps: { showCompanion: false, plugins: [plugin] } } });
+    await vi.waitFor(() => expect(recovered.text()).toContain('合法B的正文'));
+    await context.sendMessage('B上的请求');
+  } else {
+    const selectB = wrapper.get('.session-select[title="会话B"]');
+    expect(selectB.attributes('disabled')).toBeUndefined();
+    await selectB.trigger('click');
+    await vi.waitFor(() => expect(wrapper.text()).toContain('合法B的正文'));
+    expect(wrapper.find('.session-identity-notice').exists()).toBe(false);
+    await context.sendMessage('B上的请求');
+  }
+  expect(streamTurn).toHaveBeenCalledOnce();
+  expect(streamTurn).toHaveBeenCalledWith('b', 'B上的请求', expect.any(Object), expect.any(Object));
+  expect(request.mock.calls.some(([method]) => method === 'POST')).toBe(false);
+});
+
+it('allows explicit new-session creation after a missing restored identity', async () => {
+  let context!: UIPluginContext;
+  const request = vi.fn(async <T>(method: string, path: string) => {
+    if (method === 'POST' && path === '/v1/sessions') return savedSessions[1] as T;
+    if (path.split('?')[0] === '/v1/sessions') return { items: [] } as T;
+    if (path === '/v1/sessions/a') throw new AervoxHttpError(404, path, {});
+    if (path.startsWith('/v1/sessions/a/history')) throw new AervoxHttpError(404, path, {});
+    if (path.startsWith('/v1/sessions/b/history')) return savedPage('b', '明确新建后的会话') as T;
+    return { items: path === '/v1/plugins' ? [fixturePlugin] : [] } as T;
+  });
+  const streamTurn = vi.fn(async (_id, _text, callbacks, options) => { await options.onAccepted('new-b'); callbacks.onDelta('新会话回复'); callbacks.onDone(); });
+  configureAervoxClient({ sessionId: 'a', transport: { request, streamTurn, submitQuestionAnswers: vi.fn(), decideToolApproval: vi.fn() } });
+  const plugin: BuiltinUIPlugin = { id: 'fixture-extension', setup(_registry, ctx) { context = ctx!; ctx!.navigation.setQuietStartup!(true); } };
+  const wrapper = mount(UISurfaceHost, { props: { plugin: definition, surface: 'main', platform: 'web', viewProps: { showCompanion: false, plugins: [plugin] } } });
+  await vi.waitFor(() => expect(wrapper.get('.session-identity-notice').text()).toContain('已不存在'));
+  await context.sendMessage('旧身份上的请求');
+  expect(request.mock.calls.some(([method]) => method === 'POST')).toBe(false);
+  await wrapper.get('.new-chat-btn').trigger('click');
+  await vi.waitFor(() => expect(wrapper.text()).toContain('明确新建后的会话'));
+  expect(getSessionId()).toBe('b');
+  expect(wrapper.find('.session-identity-notice').exists()).toBe(false);
+  await context.sendMessage('新会话上的请求');
+  expect(streamTurn).toHaveBeenCalledWith('b', '新会话上的请求', expect.any(Object), expect.any(Object));
+  expect(request.mock.calls.filter(([method]) => method === 'POST')).toHaveLength(1);
+});
+
+it('keeps a page-external session title when a pending request rejects a nested shared selection', async () => {
+  let context!: UIPluginContext;
+  const request = vi.fn(async <T>(_method: string, path: string) => {
+    if (path.split('?')[0] === '/v1/sessions') return { items: pagedSessions.slice(0, 100) } as T;
+    if (path === '/v1/sessions/a') return savedSessions[0] as T;
+    if (path.startsWith('/v1/sessions/a/history')) return savedPage('a', '页外原会话正文') as T;
+    return { items: path === '/v1/plugins' ? [fixturePlugin] : [] } as T;
+  });
+  const streamTurn = vi.fn(async (_id, _text, callbacks, options) => {
+    await options.onAccepted('page-external-a');
+    callbacks.onToolApproval({ approvalId: 'page-approval', toolName: 'save', argumentsHash: 'hash', turnId: 'page-external-a' });
+    callbacks.onDone();
+  });
+  configureAervoxClient({ sessionId: 'a', transport: { request, streamTurn, submitQuestionAnswers: vi.fn(), decideToolApproval: vi.fn() } });
+  const plugin: BuiltinUIPlugin = { id: 'fixture-extension', setup(_registry, ctx) { context = ctx!; ctx!.navigation.setQuietStartup!(true); } };
+  const wrapper = mount(UISurfaceHost, { global: { stubs: pagedListStubs }, props: { plugin: definition, surface: 'main', platform: 'web', viewProps: { showCompanion: false, plugins: [plugin] } } });
+  await vi.waitFor(() => expect(wrapper.text()).toContain('页外原会话正文'));
+  await context.sendMessage('页外原会话的请求');
+  setSessionId('b');
+  await flushPromises();
+  expect(getSessionId()).toBe('a');
+  expect(wrapper.get('.session-active-title').text()).toBe('会话A');
+  expect(wrapper.find('.session-identity-notice').exists()).toBe(false);
+  expect(wrapper.find('.tool-approval-actions').exists()).toBe(true);
+  expect(request.mock.calls.some(([, path]) => path.startsWith('/v1/sessions/b/history'))).toBe(false);
+  expect(streamTurn).toHaveBeenCalledOnce();
+});
+
+it('keeps the default unselected conversation usable without requiring a saved identity', async () => {
+  let context!: UIPluginContext;
+  const request = vi.fn(async <T>(_method: string, path: string) => {
+    if (path.split('?')[0] === '/v1/sessions') return { items: savedSessions } as T;
+    return { items: path === '/v1/plugins' ? [fixturePlugin] : [] } as T;
+  });
+  const streamTurn = vi.fn(async (_id, _text, callbacks, options) => { await options.onAccepted('default-turn'); callbacks.onDelta('默认新对话的回复'); callbacks.onDone(); });
+  configureAervoxClient({ sessionId: 'web_default', transport: { request, streamTurn, submitQuestionAnswers: vi.fn(), decideToolApproval: vi.fn() } });
+  const plugin: BuiltinUIPlugin = { id: 'fixture-extension', setup(_registry, ctx) { context = ctx!; ctx!.navigation.setQuietStartup!(true); } };
+  const wrapper = mount(UISurfaceHost, { props: { plugin: definition, surface: 'main', platform: 'web', viewProps: { showCompanion: false, plugins: [plugin] } } });
+  await vi.waitFor(() => expect(wrapper.get('.session-active-title').text()).toBe('新对话'));
+  await flushPromises();
+  expect(getSessionId()).toBe('web_default');
+  expect(wrapper.find('.session-identity-notice').exists()).toBe(false);
+  expect(request.mock.calls.some(([, path]) => path === '/v1/sessions/web_default')).toBe(false);
+  await context.sendMessage('默认新对话');
+  expect(streamTurn).toHaveBeenCalledWith('web_default', '默认新对话', expect.any(Object), expect.any(Object));
+});
+
 it.each(['standard', 'companion'])('restores saved state in %s mode and ignores a superseded history read without creating a Turn', async mode => {
   localStorage.setItem('aervox-workbench-mode', mode);
   const old = pending<SessionHistoryPage>();
   let readsA = 0;
   const request = vi.fn(async <T>(method: string, path: string) => {
-    if (method === 'GET' && path === '/v1/sessions') return { items: savedSessions } as T;
+    if (method === 'GET' && path.split('?')[0] === '/v1/sessions') return { items: savedSessions } as T;
     if (path.startsWith('/v1/sessions/a/history')) {
       readsA++;
       return (readsA === 1 ? savedPage('a', '原会话已保存正文', 'Interrupted', 'older') : await old.promise) as T;
@@ -217,7 +403,7 @@ it.each(['standard', 'companion'])('restores saved state in %s mode and ignores 
   const streamTurn = vi.fn();
   configureAervoxClient({ sessionId: 'a', transport: { request, streamTurn, submitQuestionAnswers: vi.fn(), decideToolApproval: vi.fn() } });
   const actionPlugin: BuiltinUIPlugin = { id: 'fixture-extension', setup(registry, context) {
-    context!.navigation.setQuietStartup(true);
+    context!.navigation.setQuietStartup!(true);
     registry.registerSlotComponent('message:bubble-actions', defineComponent({ setup: () => () => h('button', { class: 'saved-executable-action' }, '执行回复操作') }), { id: 'saved-action' });
   } };
   const wrapper = mount(UISurfaceHost, { props: { plugin: definition, surface: 'main', platform: 'web', viewProps: { showCompanion: false, plugins: [actionPlugin] } } });
@@ -247,7 +433,7 @@ it('keeps pending approval in its original session through selection and new-ses
     callbacks.onDone();
   });
   const request = vi.fn(async <T>(_method: string, path: string) => {
-    if (path === '/v1/sessions') return { items: savedSessions } as T;
+    if (path.split('?')[0] === '/v1/sessions') return { items: savedSessions } as T;
     if (path.startsWith('/v1/sessions/a/history')) return savedPage('a', '原保存正文') as T;
     return { items: path === '/v1/plugins' ? [fixturePlugin] : [] } as T;
   });
@@ -255,7 +441,7 @@ it('keeps pending approval in its original session through selection and new-ses
     continuation: { attemptId: 'second-attempt', afterEventId: 'decision' } }));
   const observeTurn = vi.fn(async (_id, callbacks) => { callbacks.onDelta('审批后的原回复。'); callbacks.onDone(); });
   configureAervoxClient({ sessionId: 'a', transport: { request, streamTurn, observeTurn, decideToolApproval, submitQuestionAnswers: vi.fn() } });
-  const plugin: BuiltinUIPlugin = { id: 'fixture-extension', setup(_registry, ctx) { context = ctx!; ctx!.navigation.setQuietStartup(true); } };
+  const plugin: BuiltinUIPlugin = { id: 'fixture-extension', setup(_registry, ctx) { context = ctx!; ctx!.navigation.setQuietStartup!(true); } };
   const wrapper = mount(UISurfaceHost, { props: { plugin: definition, surface: 'main', platform: 'web', viewProps: { showCompanion: false, plugins: [plugin] } } });
   await vi.waitFor(() => expect(wrapper.text()).toContain('原保存正文'));
   await context.sendMessage('保存');
@@ -267,7 +453,7 @@ it('keeps pending approval in its original session through selection and new-ses
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', ctrlKey: true, bubbles: true }));
   await context.sendMessage('抢占新请求');
   expect(streamTurn).toHaveBeenCalledOnce();
-  expect(request.mock.calls.some(([method, path]) => method === 'POST' && path === '/v1/sessions')).toBe(false);
+  expect(request.mock.calls.some(([method, path]) => method === 'POST' && path.split('?')[0] === '/v1/sessions')).toBe(false);
   expect(request.mock.calls.some(([, path]) => path.startsWith('/v1/sessions/b/history'))).toBe(false);
   await wrapper.get('.tool-approval-actions button').trigger('click');
   await vi.waitFor(() => expect(wrapper.text()).toContain('等待审批的原回复。审批后的原回复。'));
@@ -278,14 +464,14 @@ it('waits for new-session acceptance before another submission can acquire a ses
   let context!: UIPluginContext;
   const created = pending<typeof savedSessions[number]>();
   const request = vi.fn(async <T>(method: string, path: string) => {
-    if (method === 'POST' && path === '/v1/sessions') return await created.promise as T;
-    if (path === '/v1/sessions') return { items: savedSessions } as T;
+    if (method === 'POST' && path.split('?')[0] === '/v1/sessions') return await created.promise as T;
+    if (path.split('?')[0] === '/v1/sessions') return { items: savedSessions } as T;
     if (path.startsWith('/v1/sessions/')) return savedPage(path.includes('/b/') ? 'b' : 'a', '保存的上下文') as T;
     return { items: path === '/v1/plugins' ? [fixturePlugin] : [] } as T;
   });
   const streamTurn = vi.fn(async (_id, _text, callbacks, options) => { await options.onAccepted('turn-b'); callbacks.onDelta('新的回复'); callbacks.onDone(); });
   configureAervoxClient({ sessionId: 'a', transport: { request, streamTurn, decideToolApproval: vi.fn(), submitQuestionAnswers: vi.fn() } });
-  const plugin: BuiltinUIPlugin = { id: 'fixture-extension', setup(_registry, ctx) { context = ctx!; ctx!.navigation.setQuietStartup(true); } };
+  const plugin: BuiltinUIPlugin = { id: 'fixture-extension', setup(_registry, ctx) { context = ctx!; ctx!.navigation.setQuietStartup!(true); } };
   const wrapper = mount(UISurfaceHost, { props: { plugin: definition, surface: 'main', platform: 'mobile', viewProps: { showCompanion: false, plugins: [plugin] } } });
   await vi.waitFor(() => expect(wrapper.text()).toContain('保存的上下文'));
   await wrapper.get('.new-chat-btn').trigger('click');
@@ -311,12 +497,12 @@ it('keeps a newly typed same-text mobile draft after the old request is accepted
     await finished.promise;
   });
   const request = vi.fn(async <T>(_method: string, path: string) => {
-    if (path === '/v1/sessions') return { items: savedSessions } as T;
+    if (path.split('?')[0] === '/v1/sessions') return { items: savedSessions } as T;
     if (path.startsWith('/v1/sessions/a/history')) return savedPage('a', '先前正文') as T;
     return { items: path === '/v1/plugins' ? [fixturePlugin] : [] } as T;
   });
   configureAervoxClient({ sessionId: 'a', transport: { request, streamTurn, decideToolApproval: vi.fn(), submitQuestionAnswers: vi.fn() } });
-  const plugin: BuiltinUIPlugin = { id: 'fixture-extension', setup(_registry, ctx) { context = ctx!; ctx!.navigation.setQuietStartup(true); } };
+  const plugin: BuiltinUIPlugin = { id: 'fixture-extension', setup(_registry, ctx) { context = ctx!; ctx!.navigation.setQuietStartup!(true); } };
   const wrapper = mount(UISurfaceHost, { props: { plugin: definition, surface: 'main', platform: 'mobile', viewProps: { showCompanion: false, plugins: [plugin] } } });
   await vi.waitFor(() => expect(wrapper.text()).toContain('先前正文'));
   const submission = context.sendMessage('同一句话');
@@ -337,14 +523,14 @@ it.each([true, false])('does not show a previous session failure beside another 
     callbacks.onError(new Error('terminal failure'));
   });
   const request = vi.fn(async <T>(method: string, path: string) => {
-    if (method === 'POST' && path === '/v1/sessions') return await created.promise as T;
-    if (path === '/v1/sessions') return { items: savedSessions } as T;
+    if (method === 'POST' && path.split('?')[0] === '/v1/sessions') return await created.promise as T;
+    if (path.split('?')[0] === '/v1/sessions') return { items: savedSessions } as T;
     if (path.startsWith('/v1/sessions/c/history')) return savedPage('c', 'C的保存正文') as T;
     if (path.startsWith('/v1/sessions/')) return savedPage(path.includes('/b/') ? 'b' : 'a', path.includes('/b/') ? 'B的保存正文' : 'A的保存正文') as T;
     return { items: path === '/v1/plugins' ? [fixturePlugin] : [] } as T;
   });
   configureAervoxClient({ sessionId: 'a', transport: { request, streamTurn, decideToolApproval: vi.fn(), submitQuestionAnswers: vi.fn() } });
-  const plugin: BuiltinUIPlugin = { id: 'fixture-extension', setup(_registry, ctx) { context = ctx!; ctx!.navigation.setQuietStartup(true); } };
+  const plugin: BuiltinUIPlugin = { id: 'fixture-extension', setup(_registry, ctx) { context = ctx!; ctx!.navigation.setQuietStartup!(true); } };
   const wrapper = mount(UISurfaceHost, { props: { plugin: definition, surface: 'main', platform: 'web', viewProps: { showCompanion: false, plugins: [plugin] } } });
   await vi.waitFor(() => expect(wrapper.text()).toContain('A的保存正文'));
   await context.sendMessage('失败请求');

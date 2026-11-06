@@ -154,6 +154,21 @@ const sessionWriteBusy = ref(false);
 const historyBusy = computed(() => sessionOperationBusy.value || sessionWriteBusy.value);
 const ownerSessionId = ref(sessionStore.activeSessionId.value);
 const sessionLockNotice = ref('');
+const hasSelectedSession = computed(() => Boolean(sessionStore.activeSessionId.value && sessionStore.activeSessionId.value !== 'web_default'));
+const sessionIdentityNotice = computed(() => {
+  if (!hasSelectedSession.value) return '';
+  if (sessionStore.activeSessionError.value) return sessionStore.activeSessionError.value;
+  if (!sessionStore.activeSession.value) return historyReady.value
+    ? '当前会话未能确认，请刷新后重试，或明确选择、新建会话。'
+    : '正在确认当前会话，请稍候。';
+  return '';
+});
+const activeSessionTitle = computed(() => {
+  if (sessionStore.activeSessionError.value) return '会话不可用';
+  return sessionStore.activeSession.value?.title || (hasSelectedSession.value
+    ? historyReady.value ? '会话未确认' : '正在确认会话'
+    : '新对话');
+});
 const sessions = {
   ...sessionStore,
   switchSession(id: string) {
@@ -289,6 +304,7 @@ watch(() => importSessionOpen.value, (open) => { if (open) importSessionMounted.
 
 let lastSubmissionView: {sessionId: string; lineId: number} | undefined;
 async function retrySubmission() {
+  if (sessionIdentityNotice.value) return;
   if (!lastSubmissionView || lastSubmissionView.sessionId !== sessions.activeSessionId.value) return;
   if (conversation.latestAssistantLine.value?.id !== lastSubmissionView.lineId) return;
   await continueTurn(callbacks => turnController.retry(callbacks));
@@ -296,6 +312,7 @@ async function retrySubmission() {
 
 // 统一整合发送消息逻辑
 async function sendMessage(value = composer.input.value, options?: { metadata?: Record<string, unknown>; resend?: boolean }) {
+  if (sessionIdentityNotice.value) return;
   if (conversation.historyBlocked.value) return;
   const text = value.trim();
   if ((!text && composer.pendingAttachments.value.length === 0) || conversation.streaming.value || composer.attachmentUploading.value) return;
@@ -656,7 +673,7 @@ onMounted(() => {
     void proactive.refreshProactiveStatus();
   }
 
-  void sessions.fetchSessions().then(() => {
+  void sessions.fetchSessions({ preserveSelection: true, pageSize: 100, includeActive: true }).then(() => {
     if (!surfaceContext.signal.aborted) historyReady.value = true;
   });
   void projects.fetchProjects();
@@ -737,7 +754,7 @@ onUnmounted(() => {
             >
               <PanelLeft :size="18" />
             </AervoxButton>
-            <h2 class="session-active-title">{{ sessions.activeSession.value?.title || '新对话' }}</h2>
+            <h2 class="session-active-title">{{ activeSessionTitle }}</h2>
           </div>
 
           <div class="topbar-right">
@@ -746,9 +763,10 @@ onUnmounted(() => {
         </header>
 
         <div class="standard-chat-container">
+          <p v-if="sessionIdentityNotice" class="session-identity-notice" role="status">{{ sessionIdentityNotice }}</p>
           <p v-if="sessionLockNotice" role="status">{{ sessionLockNotice }}</p>
           <StandardConversation />
-          <div class="standard-composer-wrap">
+          <div class="standard-composer-wrap" :inert="Boolean(sessionIdentityNotice)" :aria-disabled="sessionIdentityNotice ? true : undefined">
             <component
               :is="resolvedComposerComponent"
               :input="composer.input.value"
@@ -784,10 +802,13 @@ onUnmounted(() => {
       <WorkbenchNavPill />
 
       <div class="immersive-console">
+        <p v-if="sessionIdentityNotice" class="session-identity-notice" role="status">{{ sessionIdentityNotice }}</p>
         <p v-if="sessionLockNotice" role="status">{{ sessionLockNotice }}</p>
         <ConversationConsole />
         <component
           :is="resolvedComposerComponent"
+          :inert="Boolean(sessionIdentityNotice)"
+          :aria-disabled="sessionIdentityNotice ? true : undefined"
           :input="composer.input.value"
           :streaming="conversation.streaming.value"
           :is-composing="composer.isComposing.value"

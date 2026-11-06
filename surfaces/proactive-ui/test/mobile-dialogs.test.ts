@@ -56,6 +56,20 @@ beforeEach(() => {
 });
 
 describe('mobile session panel intent wiring', () => {
+  it('loads more searched pages while execution is locked and describes the loaded scope', async () => {
+    const wrapper = mount(MobileSessionsDialog, { props: {
+      modelValue: true, sessions: savedSessions, activeSessionId: 'ses_sql', hasMore: true, switchLocked: true,
+    }, global });
+    await wrapper.get('input[aria-label="搜索已加载会话"]').setValue('尚未加载的会话');
+    expect(wrapper.text()).toContain('已加载会话中没有匹配结果');
+    expect(button(wrapper, '加载更多会话').attributes('disabled')).toBeUndefined();
+    await button(wrapper, '加载更多会话').trigger('click');
+    expect(wrapper.emitted('more')).toEqual([[]]);
+    await wrapper.setProps({ loading: true });
+    expect(button(wrapper, '加载更多会话').attributes('disabled')).toBeDefined();
+    expect(wrapper.emitted('select')).toBeUndefined();
+    expect(streamTurn).not.toHaveBeenCalled();
+  });
   it.each([{ switchLocked: true, changing: false }, { switchLocked: false, changing: true }])(
     'keeps search and read-only history available while creation and switching are locked: %j', async flags => {
       const wrapper = mount(MobileSessionsDialog, { props: {
@@ -63,7 +77,7 @@ describe('mobile session panel intent wiring', () => {
       }, global });
       expect(button(wrapper, '新对话').attributes('disabled')).toBeDefined();
       expect(wrapper.findAll('.mobile-session-select').every(item => item.attributes('disabled') !== undefined)).toBe(true);
-      await wrapper.get('input[aria-label="搜索会话"]').setValue('  sQlItE  ');
+      await wrapper.get('input[aria-label="搜索已加载会话"]').setValue('  sQlItE  ');
       expect(wrapper.findAll('.mobile-session-list li')).toHaveLength(1);
       expect(wrapper.get('.mobile-session-list').text()).toContain('SQLite 整理');
       await button(wrapper, '回看「SQLite 整理」').trigger('click');
@@ -166,6 +180,19 @@ describe('mobile session management panel', () => {
 });
 
 describe('mobile read-only history panel', () => {
+  it('keeps the older-page cursor available when the current page is empty', async () => {
+    history.getPage.mockResolvedValueOnce({ sessionId: 'ses_inspected', items: [], nextCursor: 'older_empty_page' })
+      .mockResolvedValueOnce(savedPage('ses_inspected', '更早的保存记录'));
+    const wrapper = mount(MobileHistoryDialog, { props: { modelValue: true, sessionId: 'ses_inspected', title: '历史' }, global });
+    await flushPromises();
+    expect(wrapper.text()).toContain('这一页暂无可显示的对话记录');
+    expect(wrapper.text()).not.toContain('已到当前可读取记录的起点');
+    await button(wrapper, '更早一页').trigger('click'); await flushPromises();
+    expect(history.getPage).toHaveBeenNthCalledWith(2, 'ses_inspected', expect.objectContaining({ cursor: 'older_empty_page' }));
+    expect(wrapper.text()).toContain('更早的保存记录');
+    expect(wrapper.text()).toContain('已到当前可读取记录的起点');
+    expect(getSessionId()).toBe('ses_live'); expect(streamTurn).not.toHaveBeenCalled();
+  });
   it('reads the explicitly inspected session, renders saved versions and withholds bodies before DOM rendering', async () => {
     const page = savedPage('ses_inspected', '**保存的回复**');
     page.items[0]!.status = 'Interrupted'; page.items[0]!.isComplete = false;

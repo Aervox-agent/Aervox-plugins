@@ -8,13 +8,13 @@ const props = withDefaults(defineProps<{
   modelValue: boolean; sessions: readonly SessionItem[]; activeSessionId: string;
   loading?: boolean; error?: string | null; changing?: boolean;
   switchLocked?: boolean; lockReason?: string; notice?: string;
-  managing?: boolean; manageError?: string | null;
+  managing?: boolean; manageError?: string | null; hasMore?: boolean;
 }>(), {
   loading: false, error: null, changing: false, switchLocked: false, lockReason: '', notice: '',
-  managing: false, manageError: null,
+  managing: false, manageError: null, hasMore: false,
 });
 const emit = defineEmits<{
-  'update:modelValue': [value: boolean]; refresh: []; new: [];
+  'update:modelValue': [value: boolean]; refresh: []; new: []; more: [];
   select: [id: string]; history: [session: SessionItem];
   rename: [id: string, title: string]; delete: [id: string];
 }>();
@@ -75,7 +75,7 @@ watch(() => props.sessions, list => {
     <p v-if="notice" role="alert" class="mobile-session-error">{{ notice }}</p>
     <p v-if="manageError" role="alert" class="mobile-session-error">{{ manageError }}</p>
     <p v-if="switchLocked" class="mobile-session-note" role="status">{{ lockReason || '当前回复或交互尚未结束。可以回看记录，结束当前回复后再切换或新建。' }}</p>
-    <label class="mobile-session-search">搜索会话<input v-model="query" class="aervox-field" type="search" autocomplete="off" aria-label="搜索会话" placeholder="输入会话标题" /></label>
+    <label class="mobile-session-search">搜索已加载会话<input v-model="query" class="aervox-field" type="search" autocomplete="off" aria-label="搜索已加载会话" placeholder="输入会话标题" /></label>
     <p v-if="loading" role="status">正在读取会话…</p>
     <div v-if="error" class="mobile-session-error" role="alert"><p>暂时无法更新会话列表，已保留上次结果。</p><AervoxButton variant="ghost" :disabled="loading" @click="emit('refresh')">重试读取会话</AervoxButton></div>
     <ul class="mobile-session-list" aria-label="已保存的会话" :aria-busy="loading">
@@ -112,7 +112,8 @@ watch(() => props.sessions, list => {
       </li>
     </ul>
     <p v-if="!loading && !error && !sessions.length">还没有会话，点击“新对话”开始。</p>
-    <p v-else-if="sessions.length && !matching.length">没有匹配的会话。</p>
+    <p v-else-if="sessions.length && !matching.length">已加载会话中没有匹配结果。</p>
+    <AervoxButton v-if="hasMore" variant="secondary" :disabled="loading || changing" @click="emit('more')">加载更多会话</AervoxButton>
   </AervoxDialog>
 </template>
 

@@ -3,24 +3,25 @@
  * 思隅·主动陪伴（方向 D 落地）——主界面替代根组件。
  *
  * 设计原则（用户确认的设计方向）：
- * - 一级页面元素极精简：品牌、两个静音按钮、桌宠、对话盒、两张建议卡；
- * - 两张建议卡是主要入口，由主动智能依据学习记录给出，并附「为什么推荐」理由行；
- * - 输入框淡化为一枚药丸，展开时建议卡让位（mode-whisper），发送后收回；
+ * - 保留角色和对话结构，以明确入口打开已有会话、学习与日记；
+ * - 首页入口只做导航，不以固定文案冒充推荐或执行结果；
+ * - 输入框常驻，草稿和未决提交随会话保留；
  * - 对话盒为思隅唯一声音出口：问候、流式回复、动作确认都经打字机呈现。
  */
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch, type Component } from 'vue';
 import { useUISurfaceContext } from '@aervox/ui-host';
 import { useMaterial3 } from '@aervox/ui/material3';
-import { ExtensionSlot } from '@aervox/ui/primitives';
+import { AervoxDialog, ExtensionSlot } from '@aervox/ui/primitives';
 import { AervoxBrandMark, PetWithFallback, UserQuestionComposer, readCompanionIdentity, useSessionDraft } from '@aervox/ui/companion';
 import { AervoxHttpError, createConversationController, getClientTransport, useAervoxApi, useAervoxPlugins, useAervoxSessions } from '@aervox/api-client';
 import { createUIRegistry, provideUIRegistry, createWorkbenchPluginRuntime, createPluginEventBus, createPluginStateStore, provideUIPluginContext, resolveOutgoingMessage, type BuiltinUIPlugin, type UIPluginContext } from '@aervox/ui/plugin-api';
-import { ArrowUpRight, Copy, History, MessagesSquare, MessageSquare, Mic, Paperclip, RotateCcw, Settings, Square, Volume2, X } from 'lucide-vue-next';
+import { ArrowUpRight, BookOpen, Copy, History, Mic, Paperclip, RotateCcw, Settings, Square, Volume2, X } from 'lucide-vue-next';
 import type { AskUserQuestionAnswerItem } from '@aervox/contracts';
 import { useDialogueTyper } from './dialogue-typer';
 import MobileSettingsDialog from './MobileSettingsDialog.vue';
 import MobileSessionsDialog from './MobileSessionsDialog.vue';
 import MobileHistoryDialog from './MobileHistoryDialog.vue';
+import DiaryView from './DiaryView.vue';
 import { renderMarkdown } from '@aervox/ui/markdown';
 import '@aervox/ui/theme/companion';
 import type { SurfaceNavigation } from '@aervox/ui/companion';
@@ -30,9 +31,13 @@ const props = withDefaults(defineProps<{
   settingsPanels?: readonly { category: string; component: Component }[];
   plugins?: BuiltinUIPlugin[];
   nativeRuntime?: boolean;
+  learningPanel?: Component;
   draftStorage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 }>(), { settingsPanels: () => [], plugins: () => [] });
 const settingsOpen = ref(false);
+const todayOpen = ref(false);
+const learningOpen = ref(false);
+const diaryOpen = ref(false);
 
 const surface = useUISurfaceContext();
 const registry = createUIRegistry();
@@ -45,11 +50,12 @@ const pluginLoadError = ref(false);
 const material3 = useMaterial3();
 const mobileScreen = ref<HTMLElement>();
 const mobileFeedbackRegion = ref<HTMLElement>();
-const mobileSuggestionRegion = ref<HTMLElement>();
 // The Android composition root registers the official Material Web elements.
 // Other hosts keep their existing native controls and visual language.
 const buttonTag = (materialTag: string) => material3 ? materialTag : 'button';
 const sessions = useAervoxSessions();
+const resumeSession = computed(() => sessions.activeSession.value ?? [...sessions.sessions.value]
+  .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0] ?? null);
 const sessionsOpen = ref(false);
 const historyOpen = ref(false);
 const historySessionId = ref('');
@@ -64,7 +70,9 @@ const sessionManaging = ref(false);
 const sessionManageError = ref<string | null>(null);
 // A stale management failure should not greet the next opening of the list.
 watch(sessionsOpen, open => { if (open) sessionManageError.value = null; });
-const mobileSessionTitle = computed(() => sessions.activeSession.value?.title ?? (!sessionsReady.value ? '正在读取会话…' : sessionListError.value ? '会话读取失败' : sessions.activeSessionId.value && sessions.activeSessionId.value !== 'web_default' ? '当前会话不可用' : '新对话'));
+const mobileSessionTitle = computed(() => sessions.activeSession.value?.title ?? (!sessionsReady.value ? '正在读取会话…'
+  : sessions.activeSessionError.value ? sessions.activeSessionError.value.startsWith('当前会话已不存在') ? '当前会话不可用' : '当前会话未能确认'
+  : sessionListError.value ? '会话读取失败' : sessions.activeSessionId.value && sessions.activeSessionId.value !== 'web_default' ? '当前会话未能确认' : '新对话'));
 
 /* ---------- 卡片堆叠（对话 / 会话 / 工具 / 日记，横向滑动切换） ---------- */
 const deckTrack = ref<HTMLDivElement>();
@@ -78,7 +86,8 @@ function onDeckScroll() {
 function goDeck(index: number) {
   const track = deckTrack.value;
   if (!track) return;
-  track.scrollTo({ left: index * track.clientWidth, behavior: 'smooth' });
+  if (typeof track.scrollTo === 'function') track.scrollTo({ left: index * track.clientWidth, behavior: 'smooth' });
+  else track.scrollLeft = index * track.clientWidth;
   deckIndex.value = index;
 }
 
@@ -139,7 +148,7 @@ async function loadDiary(force = false) {
 }
 
 async function writeDiary() {
-  if (diaryBusy.value) return;
+  if (diaryBusy.value || chatPending.value) return;
   diaryWriting.value = true;
   diaryError.value = '';
   diaryNote.value = '';
@@ -170,31 +179,20 @@ function closePastDiary() {
 }
 
 // 只在真的翻到日记卡时读取，别让首页启动多两次请求。
-watch(deckIndex, index => { if (index === 3) void loadDiary(); });
+const diaryVisible = computed(() => material3 ? deckIndex.value === 3 : diaryOpen.value);
+watch(diaryVisible, visible => { if (visible) void loadDiary(); });
 let diaryDayTimer: ReturnType<typeof setInterval> | undefined;
 const refreshDiaryOnForeground = () => {
-  if (!document.hidden && deckIndex.value === 3) void loadDiary();
+  if (!document.hidden && diaryVisible.value) void loadDiary();
 };
-
 
 /* ---------- 对话盒 ---------- */
 const identity = readCompanionIdentity();
 const companionName = ref(identity.companionName);
 const greeting = '你好' + (identity.userAddress === '你' ? '' : '，' + identity.userAddress) + '，我是' + identity.companionName
-  + (props.nativeRuntime ? '。想聊什么，直接告诉我。' : '。今天想继续昨天的进度，还是先安静专注一会儿？');
+  + '。想聊什么，直接告诉我。';
 const dialogueCtx = ref(props.nativeRuntime ? '本机对话' : '主动陪伴 · 每日开场');
 const { shown: dialogueText, streaming: dialogueTyping, say, appendDelta, finish } = useDialogueTyper(greeting);
-
-/* ---------- 建议卡（主动建议，附理由） ---------- */
-interface Suggestion {
-  key: string;
-  label: string;
-  reason: string;
-  primary: boolean;
-  reply: string;
-  ctx: string;
-  action: () => Promise<boolean> | void;
-}
 
 function relativeDay(iso: string): string {
   const then = new Date(iso).getTime();
@@ -286,8 +284,12 @@ interface FailedTurn {
   content: string;
   source: 'suggestion' | 'whisper';
   sessionId?: string;
+  draftText?: string;
+  metadata?: Record<string, unknown>;
+  attachment?: TextAttachment | null;
+  draftReservationStarted?: boolean;
 }
-const failedTurn = ref<FailedTurn>();
+const failedTurn = shallowRef<FailedTurn>();
 const turnController = createConversationController(clientTransport, surface.signal);
 const conversationState = ref(turnController.state);
 const unsubscribeConversation = turnController.subscribe(state => { conversationState.value = state; });
@@ -303,12 +305,10 @@ async function refreshPluginUI() {
 const unavailableCapability = (): never => { throw new Error('SURFACE_CAPABILITY_UNAVAILABLE'); };
 const pluginContext: UIPluginContext = Object.freeze({
   navigation: Object.freeze({
-    openTool: (tool: string) => { if (tool === 'history') openMobileHistory(); else unavailableCapability(); },
+    openTool: (tool: string) => { if (tool === 'history') openMobileHistory(); else if (tool === 'diary') openDiary(); else unavailableCapability(); },
     runMenuAction: (action: () => void) => action(),
-    closeTaskCenter: unavailableCapability,
-    setQuietStartup: unavailableCapability,
   }),
-  cards: Object.freeze({ acquireSlotPreset: unavailableCapability, reviewCount: computed(() => learning.dueReviews.value.length) }),
+  cards: Object.freeze({ reviewCount: computed(() => learning.dueReviews.value.length) }),
   conversation: Object.freeze({ streaming: computed(() => sending.value), latestAssistantText: computed(() => dialogueText.value) }),
   learning, pluginEvents, pluginState,
   isPluginAvailable: (id: string) => pluginRuntime?.isPluginAvailable(id) ?? false,
@@ -324,11 +324,12 @@ watch(settingsOpen, (open, previous) => { if (previous && !open) void refreshPlu
 const interactionBusy = ref(false);
 let stopPreparing = false;
 let hasTurnReply = false;
-const sessionSwitchLocked = computed(() => sending.value || stopping.value || interactionBusy.value || sessionChanging.value
-  || sessionManaging.value
+const chatPending = computed(() => sending.value || stopping.value || interactionBusy.value
   || ['submitting', 'observing', 'awaiting-input', 'awaiting-approval', 'observer-error'].includes(conversationState.value.status)
   || conversationState.value.retryAvailable === true);
-const switchLockReason = computed(() => conversationState.value.retryAvailable && !conversationState.value.turnId
+const sessionSwitchLocked = computed(() => chatPending.value || sessionChanging.value || sessionManaging.value || diaryWriting.value);
+const switchLockReason = computed(() => diaryWriting.value ? '正在写日记，请等待完成后再发送、切换或新建会话。'
+  : conversationState.value.retryAvailable && !conversationState.value.turnId
   ? '上一条消息的提交结果尚未确认，请先重试。回看记录不会再次发送消息。'
   : conversationState.value.question ? '请先回答当前问题，或明确停止当前回复，再切换会话。'
   : conversationState.value.approval ? '请先处理当前工具授权，或明确停止当前回复，再切换会话。'
@@ -336,7 +337,6 @@ const switchLockReason = computed(() => conversationState.value.retryAvailable &
 const observationFailed = () => turnController.state.status === 'observer-error';
 const canStop = computed(() => sending.value || ['observing', 'awaiting-input', 'awaiting-approval', 'observer-error'].includes(conversationState.value.status));
 const companionStatus = computed(() => {
-  if (!material3) return '伴学中';
   if (stopping.value) return '正在停止';
   if (preparingSession.value || sessionChanging.value) return '正在准备会话';
   if (conversationState.value.question) return '等待你的回答';
@@ -394,41 +394,49 @@ function dialogueCallbacks(previousContext: string, preserveReply = false) {
   };
 }
 
-async function sendTurn(content: string, source: 'suggestion' | 'whisper' = 'suggestion', draftText?: string, metadata?: Record<string, unknown>) {
-  if (sending.value || surface.signal.aborted || material3 && sessionSwitchLocked.value) return false;
-  if (material3 && (!sessionsReady.value || sessionListError.value)) {
+async function sendTurn(content: string, source: 'suggestion' | 'whisper' = 'suggestion', draftText?: string, metadata?: Record<string, unknown>, submittedAttachment?: TextAttachment | null, draftReservationStarted = false) {
+  if (surface.signal.aborted || sessionSwitchLocked.value) return false;
+  if (!sessionsReady.value || sessionListError.value) {
     sessionFeedback.value = '请先读取会话列表，再发送消息。你的草稿会保留。'; sessionsOpen.value = true; return false;
   }
-  if (material3 && sessions.activeSessionId.value && sessions.activeSessionId.value !== 'web_default'
-    && !sessions.sessions.value.some(session => session.id === sessions.activeSessionId.value)) {
-    sessionFeedback.value = '当前会话已不可用，请选择其他会话或新建。草稿仍保留在原会话。'; sessionsOpen.value = true; return false;
+  if (sessions.activeSessionId.value && sessions.activeSessionId.value !== 'web_default'
+    && !sessions.activeSession.value) {
+    sessionFeedback.value = sessions.activeSessionError.value?.startsWith('当前会话已不存在')
+      ? '当前会话已不可用，请选择其他会话或新建。草稿仍保留在原会话。'
+      : '当前会话未能确认，请刷新后重试。草稿仍保留在原会话。';
+    sessionsOpen.value = true; return false;
   }
   sending.value = true; waitingForReply.value = true; stopPreparing = false;
   turnFeedback.value = undefined; failedTurn.value = undefined; finish();
   const previousContext = dialogueCtx.value;
-  let submission: FailedTurn = {content, source};
+  let submission: FailedTurn = {content, source, draftText, metadata, attachment: submittedAttachment, draftReservationStarted};
   hasTurnReply = false;
   const callbacks = dialogueCallbacks(previousContext);
   try {
-    if (!sessions.sessions.value.some(session => session.id === sessions.activeSessionId.value)) {
+    if (!sessions.activeSessionId.value || sessions.activeSessionId.value === 'web_default') {
       const previousId = sessions.activeSessionId.value;
-      preparingSession.value = material3;
+      preparingSession.value = true;
       try { await sessions.createNewSession(); } finally { preparingSession.value = false; }
-      if (material3 && draftText !== undefined) drafts.transferUnsubmittedDraft(previousId, sessions.activeSessionId.value, draftText);
+      if (draftText !== undefined) transferInitialTextDraft(previousId, sessions.activeSessionId.value, draftText);
+      transferUnsubmittedAttachment(previousId, sessions.activeSessionId.value, submittedAttachment);
     }
     surface.signal.throwIfAborted();
     if (stopPreparing) { turnFeedback.value = {kind: 'stopped', message: '已停止回复。'}; return false; }
     const sessionId = sessions.activeSessionId.value;
-    submission = {content, source, sessionId};
-    if (material3 && draftText !== undefined) drafts.beginDraftSubmission(draftText, sessionId);
+    if (draftText !== undefined && !draftReservationStarted) {
+      drafts.beginDraftSubmission(draftText, sessionId);
+      draftReservationStarted = true;
+    }
+    submission = {content, source, sessionId, draftText, metadata, attachment: submittedAttachment, draftReservationStarted};
     dialogueCtx.value = '正在回复';
     const outgoing = resolveOutgoingMessage(registry, content, {...metadata, ...identity});
     await turnController.submit(sessionId, outgoing.text, callbacks, {
       signal: surface.signal,
       metadata: outgoing.metadata,
-      onAccepted: material3 && source === 'whisper' ? () => {
+      onAccepted: source === 'whisper' ? () => {
         if (surface.signal.aborted) return;
         drafts.acceptDraftSubmission(sessionId);
+        acceptAttachmentSubmission(sessionId, submittedAttachment);
       } : undefined,
     });
     if (turnController.state.status === 'stopped') turnFeedback.value = {kind: 'stopped', message: '已停止回复。'};
@@ -436,8 +444,11 @@ async function sendTurn(content: string, source: 'suggestion' | 'whisper' = 'sug
   } catch (error) {
     if (!surface.signal.aborted) {
       finish(); waitingForReply.value = false;
-      if (material3 && source === 'whisper') {
-        if (turnController.state.turnId) drafts.acceptDraftSubmission(submission.sessionId);
+      if (source === 'whisper') {
+        if (turnController.state.turnId) {
+          drafts.acceptDraftSubmission(submission.sessionId);
+          if (submission.sessionId) acceptAttachmentSubmission(submission.sessionId, submittedAttachment);
+        }
         else if (draftText !== undefined) drafts.restoreFailedDraft();
       }
       if (props.nativeRuntime && error instanceof AervoxHttpError && error.status === 422 && error.code === 'MODEL_NOT_CONFIGURED'
@@ -464,7 +475,7 @@ async function sendTurn(content: string, source: 'suggestion' | 'whisper' = 'sug
 }
 
 async function resumeAfterSavedAnswer() {
-  if (!material3 || sending.value || turnController.state.status !== 'observing' || !turnController.state.turnId) return;
+  if (sending.value || turnController.state.status !== 'observing' || !turnController.state.turnId) return;
   sending.value = true; waitingForReply.value = true;
   try { await turnController.observe(turnController.state.turnId, dialogueCallbacks(dialogueCtx.value, hasTurnReply), {
     afterEventId: turnController.state.afterEventId, signal: surface.signal,
@@ -495,79 +506,82 @@ async function decideApproval(decision: 'granted' | 'denied') {
   finally { interactionBusy.value = false; sending.value = false; }
 }
 
-const suggestions = computed<Suggestion[]>(() => {
-  const list: Suggestion[] = [];
-  const recent = [...sessions.sessions.value]
-    .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
-  if (recent) {
-    list.push({
-      key: 'resume',
-      label: `继续「${recent.title}」`,
-      reason: `${relativeDay(recent.updatedAt)}聊到这里 · 点击接续`,
-      primary: true,
-      reply: `好，我们回到「${recent.title}」。接着上次的地方继续——你还记得到哪里了吗？`,
-      ctx: '接续最近会话',
-      action: () => {
-        if (material3) { selectMobileSession(recent.id); return; }
-        // Keep the actual reply and its recovery cursor together when reselecting
-        // the current conversation; a canned greeting must never replace it.
-        if (sessions.activeSessionId.value === recent.id && turnController.state.turnId) return;
-        turnController.reset(); failedTurn.value = undefined; turnFeedback.value = undefined;
-        hasTurnReply = false; waitingForReply.value = false;
-        sessions.switchSession(recent.id);
-        say(`好，我们回到「${recent.title}」。接着上次的地方继续——你还记得到哪里了吗？`, '接续最近会话');
-      },
-    });
-  }
-  // The independent host currently exposes conversation commands only. Do not
-  // advertise desktop plugin actions whose handlers are not registered here.
-  if (props.nativeRuntime) return list;
-  list.push({
-    key: 'focus',
-    label: '先专注 25 分钟',
-    reason: '番茄钟 · 到点' + companionName.value + '提醒你',
-    primary: list.length === 0,
-    reply: '',
-    ctx: '番茄钟',
-    action: () => sendTurn('我想专注 25 分钟，帮我开始一个番茄钟。'),
-  });
-  if (list.length === 1) {
-    list.unshift({
-      key: 'first-goal',
-      label: '定下今天的学习目标',
-      reason: '还没有学习记录 · 从一句目标开始',
-      primary: true,
-      reply: '',
-      ctx: '新的起点',
-      action: () => sendTurn('今天我想开始学习一个新的目标，帮我拆解第一步。'),
-    });
-  }
-  return list.slice(0, 2);
-});
+function openResume() {
+  const target = resumeSession.value;
+  if (target) openMobileHistory(target.id, target.title);
+}
+function openDiary() {
+  todayOpen.value = false;
+  if (material3) goDeck(3);
+  else diaryOpen.value = true;
+}
+function openLearning() {
+  if (!props.learningPanel) return;
+  todayOpen.value = false;
+  learningOpen.value = true;
+}
 
 /* ---------- 悄悄话输入（淡化） ---------- */
-const whisperOpen = ref(false);
 const whisperText = ref('');
 // Text attachments ride along with the next message (images await a multimodal
 // bridge; a text file is an honest first slice of the attachment story).
-const attachment = ref<{ name: string; text: string } | null>(null);
+interface TextAttachment { name: string; text: string }
+const attachment = shallowRef<TextAttachment | null>(null);
+const attachmentCache = new Map<string, { value: TextAttachment | null; stored: string | null | undefined }>();
 const attachmentSupported = typeof clientTransport.pickTextFile === 'function';
 // Match the host draft key namespace so the native cache allowlist accepts it.
-const attachmentKey = () => `aervox-mobile-draft:attachment-${sessions.activeSessionId.value || 'none'}`;
-function persistAttachment() {
+const attachmentKey = (sessionId = sessions.activeSessionId.value) => `aervox-mobile-draft:attachment-${sessionId || 'none'}`;
+const attachmentStorage = () => props.draftStorage ?? (typeof localStorage === 'undefined' ? undefined : localStorage);
+function readOwnerAttachment(ownerId: string): TextAttachment | null {
+  const cached = attachmentCache.get(ownerId);
+  let raw: string | null;
+  try { raw = attachmentStorage()?.getItem(attachmentKey(ownerId)) ?? null; }
+  catch { return cached?.value ?? null; }
+  // Reuse the exact object across A → B → A. A new pick updates this cache
+  // even if its serialized bytes happen to match the older attachment.
+  if (cached && (cached.stored === undefined || cached.stored === raw)) return cached.value;
+  let value: TextAttachment | null = null;
   try {
-    const target = props.draftStorage ?? (typeof localStorage === 'undefined' ? undefined : localStorage);
-    if (!target) return;
-    if (attachment.value) target.setItem(attachmentKey(), JSON.stringify(attachment.value));
-    else target.removeItem(attachmentKey());
-  } catch { /* Storage is best-effort; the chip still works without it. */ }
+    const parsed: unknown = raw ? JSON.parse(raw) : null;
+    if (parsed && typeof parsed === 'object' && 'name' in parsed && typeof parsed.name === 'string'
+      && 'text' in parsed && typeof parsed.text === 'string') value = parsed as TextAttachment;
+  } catch { /* A corrupt draft is absent; do not compose it into a message. */ }
+  attachmentCache.set(ownerId, { value, stored: raw });
+  return value;
+}
+function persistOwnerAttachment(ownerId: string, value: TextAttachment | null): boolean {
+  const key = attachmentKey(ownerId), serialized = value ? JSON.stringify(value) : null;
+  let stored = attachmentCache.get(ownerId)?.stored;
+  let persisted = true;
+  try {
+    const target = attachmentStorage();
+    if (target) {
+      stored = target.getItem(key);
+      if (serialized === null) target.removeItem(key); else target.setItem(key, serialized);
+      stored = target.getItem(key);
+      persisted = stored === serialized;
+    }
+  } catch { persisted = false; /* Keep the latest in-process edit if persistence fails. */ }
+  attachmentCache.set(ownerId, { value, stored });
+  if (sessions.activeSessionId.value === ownerId) attachment.value = value;
+  return persisted;
+}
+function transferUnsubmittedAttachment(fromId: string, toId: string, expected?: TextAttachment | null) {
+  if (!expected || fromId === toId || readOwnerAttachment(fromId) !== expected || readOwnerAttachment(toId)) return;
+  // Write the new owner first. If it cannot persist, keep the original owner's
+  // copy as well as the visible in-process draft; a create receipt cannot lose it.
+  if (persistOwnerAttachment(toId, expected) && readOwnerAttachment(fromId) === expected) persistOwnerAttachment(fromId, null);
+}
+function acceptAttachmentSubmission(ownerId: string, submitted?: TextAttachment | null) {
+  // Owner cache identity protects both the visible chip and away-owner storage
+  // from an old receipt after a same-content attachment has been picked anew.
+  if (submitted && readOwnerAttachment(ownerId) === submitted) persistOwnerAttachment(ownerId, null);
+}
+function persistAttachment() {
+  persistOwnerAttachment(sessions.activeSessionId.value, attachment.value);
 }
 function restoreAttachment() {
-  try {
-    const target = props.draftStorage ?? (typeof localStorage === 'undefined' ? undefined : localStorage);
-    const raw = target?.getItem(attachmentKey());
-    if (raw) attachment.value = JSON.parse(raw) as { name: string; text: string };
-  } catch { /* A corrupt draft is simply absent. */ }
+  attachment.value = readOwnerAttachment(sessions.activeSessionId.value);
 }
 restoreAttachment();
 watch(() => sessions.activeSessionId.value, () => {
@@ -592,10 +606,21 @@ async function pickAttachment() {
   }
 }
 const whisperInput = ref<HTMLInputElement | HTMLTextAreaElement>();
-const whisperPill = ref<HTMLButtonElement>();
 const drafts = useSessionDraft({ input: whisperText, sessionId: sessions.activeSessionId, storage: props.draftStorage,
-  enabled: computed(() => material3), onRestore: () => { if (!sessionsOpen.value && !historyOpen.value && !settingsOpen.value) whisperOpen.value = true; } });
-// 手机输入条常驻（没有收起态），因此不再注册返回层：返回键应交给当前弹层，
+  enabled: computed(() => true) });
+function transferInitialTextDraft(fromId: string, toId: string, text: string) {
+  if (drafts.transferUnsubmittedDraft(fromId, toId, text) || fromId || !toId || !text.trim() || whisperText.value.trim()) return;
+  // The shared draft helper persists named owners only. An initial empty owner
+  // has its text in memory; move it after creation before stop/submit can return.
+  whisperText.value = text;
+  drafts.saveDraft(text, toId);
+  try {
+    const target = attachmentStorage();
+    if (target?.getItem(`aervox-mobile-draft:${encodeURIComponent(toId)}`) === text
+      && target.getItem('aervox-mobile-draft:') === text) target.removeItem('aervox-mobile-draft:');
+  } catch { /* Keep the visible text and any original persisted copy. */ }
+}
+// 输入条常驻（没有收起态），因此不再注册返回层：返回键应交给当前弹层，
 // 而不是收起一个永远可见的输入框。
 function resizeWhisper() {
   if (!material3 || !(whisperInput.value instanceof HTMLTextAreaElement)) return;
@@ -632,19 +657,17 @@ watch(whisperInput, input => {
   });
   whisperResizeObserver.observe(input);
 }, { flush: 'post' });
-watch([whisperText, whisperOpen, settingsOpen, sessionsOpen, historyOpen], scheduleWhisperResize, { immediate: true, flush: 'post' });
+watch([whisperText, settingsOpen, sessionsOpen, historyOpen], scheduleWhisperResize, { immediate: true, flush: 'post' });
 async function openWhisper() {
-  whisperOpen.value = true;
   await nextTick();
   whisperInput.value?.focus();
   // 手机输入条常驻：再次聚焦也要按当前内容重测高度（草稿恢复、窗口宽度变化后同理）。
   scheduleWhisperResize();
 }
 async function closeWhisper() {
-  whisperOpen.value = false;
   await nextTick();
-  if (material3) { whisperInput.value?.blur(); mobileScreen.value?.focus({ preventScroll: true }); }
-  else whisperPill.value?.focus({ preventScroll: true });
+  whisperInput.value?.blur();
+  mobileScreen.value?.focus({ preventScroll: true });
 }
 function onWhisperKeydown(event: KeyboardEvent) {
   if (event.isComposing || event.keyCode === 229) return;
@@ -659,12 +682,7 @@ async function sendWhisper() {
   if (!text || sending.value) return;
   const attached = attachment.value;
   const composed = attached ? `${text}\n\n（附件：${attached.name}）\n${attached.text}` : text;
-  const sent = await sendTurn(composed, 'whisper', material3 ? raw : undefined);
-  if (sent && attached) { attachment.value = null; persistAttachment(); }
-  if (!material3 && sent && whisperText.value.trim() === text) {
-    whisperText.value = '';
-    closeWhisper();
-  }
+  await sendTurn(composed, 'whisper', raw, undefined, attached);
 }
 
 async function retryTurn() {
@@ -678,23 +696,20 @@ async function retryTurn() {
   }
   const failed = failedTurn.value;
   if (!failed || sending.value) return;
-  const content = material3 ? failed.content : failed.source === 'whisper' ? whisperText.value.trim() : failed.content;
-  if (content !== failed.content || failed.sessionId !== sessions.activeSessionId.value) {
-    if (failed.source === 'whisper') await sendWhisper();
-    else await sendTurn(content, failed.source);
+  if (failed.sessionId && failed.sessionId !== sessions.activeSessionId.value) {
+    sessionFeedback.value = '请回到原会话后恢复这条消息。提交结果和草稿仍保留。';
     return;
   }
   sending.value = true; waitingForReply.value = true; turnFeedback.value = undefined;
   try {
     await turnController.retry(dialogueCallbacks(dialogueCtx.value));
     failedTurn.value = undefined;
-    if (!material3 && failed.source === 'whisper' && whisperText.value.trim() === failed.content) { whisperText.value = ''; closeWhisper(); }
   } catch (error) {
     if (error instanceof Error && error.message === 'submission_not_retryable') {
       sending.value = false;
-      if (material3) await sendTurn(failed.content, failed.source);
-      else if (failed.source === 'whisper') await sendWhisper();
-      else await sendTurn(failed.content, failed.source);
+      // A definite retry is a new Turn, but the old draft reservation still
+      // owns its original edit history (or was already cleared by acceptance).
+      await sendTurn(failed.content, failed.source, failed.draftText, failed.metadata, failed.attachment, failed.draftReservationStarted);
     } else if (!surface.signal.aborted) {
       turnFeedback.value = {kind: observationFailed() ? 'observer-error' : 'connection-error', message: '连接失败，请稍后重试。'};
       if (observationFailed()) failedTurn.value = undefined;
@@ -704,18 +719,23 @@ async function retryTurn() {
 
 async function refreshMobileSessions() {
   sessionCreationError.value = '';
-  await sessions.fetchSessions({ preserveSelection: true });
-  sessionsReady.value = true; sessionListError.value = sessions.error.value;
+  await sessions.fetchSessions({ pageSize: 100, preserveSelection: true, includeActive: true });
+  sessionsReady.value = true;
+  sessionListError.value = sessions.error.value === sessions.activeSessionError.value ? null : sessions.error.value;
+}
+async function loadMoreSessions() {
+  await sessions.loadMoreSessions();
+  if (!surface.signal.aborted) sessionListError.value = sessions.error.value === sessions.activeSessionError.value ? null : sessions.error.value;
 }
 function openMobileHistory(id = sessions.activeSessionId.value, title = sessions.activeSession.value?.title ?? '当前会话') {
   historySessionId.value = id; historyTitle.value = title; historyOpen.value = true;
 }
 function resetMobilePresentation() {
   turnController.reset(); failedTurn.value = undefined; turnFeedback.value = undefined;
-  hasTurnReply = false; waitingForReply.value = false; sessionFeedback.value = ''; whisperOpen.value = false; toolActivity.value = '';
+  hasTurnReply = false; waitingForReply.value = false; sessionFeedback.value = ''; toolActivity.value = '';
 }
 function selectMobileSession(id: string) {
-  if (sessionSwitchLocked.value || !sessions.sessions.value.some(item => item.id === id)) return;
+  if (sessionSwitchLocked.value || !(sessions.activeSession.value?.id === id || sessions.sessions.value.some(item => item.id === id))) return;
   if (id !== sessions.activeSessionId.value) {
     resetMobilePresentation(); sessions.switchSession(id);
     say('已切换会话。可以回看已保存的记录，或继续发送消息。', '继续对话');
@@ -725,14 +745,17 @@ function selectMobileSession(id: string) {
 async function createMobileSession() {
   if (sessionSwitchLocked.value || sessions.loading.value) return;
   sessionChanging.value = true; sessionFeedback.value = ''; sessionCreationError.value = '';
-  const previous = sessions.activeSessionId.value, draft = whisperText.value;
+  const previous = sessions.activeSessionId.value, draft = whisperText.value, draftAttachment = attachment.value;
   try {
     await sessions.createNewSession();
     if (surface.signal.aborted) return;
     // Explicit creation supplies an authoritative selected session even if the
     // earlier list read failed. Do not keep that stale read error blocking it.
     sessionsReady.value = true; sessionListError.value = null;
-    if (previous === 'web_default' && draft.trim()) drafts.transferUnsubmittedDraft(previous, sessions.activeSessionId.value, draft);
+    if (!previous || previous === 'web_default') {
+      if (draft.trim()) transferInitialTextDraft(previous, sessions.activeSessionId.value, draft);
+      transferUnsubmittedAttachment(previous, sessions.activeSessionId.value, draftAttachment);
+    }
     resetMobilePresentation(); sessionsOpen.value = false;
     say('新的对话准备好了。想聊什么，直接告诉我。', '新对话');
   } catch { sessionCreationError.value = '新对话没有创建成功，草稿已保留。可以再次点击“新对话”。'; }
@@ -766,6 +789,7 @@ async function renameMobileSession(id: string, title: string) {
   } finally { sessionManaging.value = false; }
 }
 function clearDeletedSessionDrafts(id: string) {
+  attachmentCache.delete(id);
   try {
     const target = props.draftStorage ?? (typeof localStorage === 'undefined' ? undefined : localStorage);
     // Use the acknowledged deleted identity: the session hook may already have
@@ -832,10 +856,10 @@ onMounted(() => {
     document.documentElement.dataset.theme = savedTheme === 'dark' || savedTheme === 'light'
       ? savedTheme : window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   }
-  if (material3) void refreshMobileSessions(); else void sessions.fetchSessions();
+  void refreshMobileSessions();
   void refreshPluginUI().catch(() => undefined);
   syncViewport();
-  if (material3) diaryDayTimer = setInterval(refreshDiaryOnForeground, 60_000);
+  diaryDayTimer = setInterval(refreshDiaryOnForeground, 60_000);
   document.addEventListener('visibilitychange', refreshDiaryOnForeground);
   window.addEventListener('resize', syncViewport);
   window.visualViewport?.addEventListener('resize', syncViewport);
@@ -881,15 +905,13 @@ onBeforeUnmount(() => {
       </div>
     </header>
 
-    <p v-if="material3" class="pc-current-session">{{ mobileSessionTitle }}</p>
+    <p class="pc-current-session">{{ mobileSessionTitle }}</p>
     <main class="pc-content">
     <div class="pc-stage">
       <div class="pc-pet-wrap">
         <div class="pc-pet-status">{{ companionStatus }}</div>
         <PetWithFallback :show-fallback-while-loading="material3" />
       </div>
-      <!-- 建议贴着角色出现（手机）：说出口的建议，而不是页面底部的一条横幅。 -->
-      <div v-if="material3" ref="mobileSuggestionRegion" class="pc-stage-suggestions" />
     </div>
 
     <div class="pc-deck-track" ref="deckTrack" @scroll.passive="onDeckScroll">
@@ -929,7 +951,7 @@ onBeforeUnmount(() => {
           v-else-if="failedTurn"
           type="button"
           class="pc-retry pc-feedback-action"
-          :disabled="sending || (!material3 && failedTurn.source === 'whisper' && !whisperText.trim())"
+          :disabled="sending || diaryWriting"
           @click="retryTurn"
         ><RotateCcw :slot="material3 ? 'icon' : undefined" :size="material3 ? 18 : 14" aria-hidden="true" />重试发送</component>
         <component :is="buttonTag('md-text-button')" v-else-if="conversationState.status === 'observer-error' && conversationState.retryAvailable" type="button" class="pc-resume pc-feedback-action" :disabled="sending" @click="retryTurn"><RotateCcw :slot="material3 ? 'icon' : undefined" :size="material3 ? 18 : 14" aria-hidden="true" />恢复接收回复</component>
@@ -980,30 +1002,12 @@ onBeforeUnmount(() => {
     <section v-if="material3" class="pc-deck-slide" aria-label="日记">
       <div class="pc-dialogue-name">日记</div>
       <div class="pc-dialogue-box pc-deck-box">
-        <div class="pc-deck-head">
-          <span class="pc-deck-current">{{ diaryTitle }}</span>
-          <component :is="'md-text-button'" type="button" class="pc-deck-new" :disabled="diaryBusy" @click="writeDiary">{{ diaryToday ? '重写' : '写一篇' }}</component>
-        </div>
-        <div class="pc-diary-scroll">
-          <p v-if="diaryBusy && !diaryShown" class="pc-deck-empty">{{ diaryWriting ? '正在写今天的日记…' : '正在读取日记…' }}</p>
-          <div v-else-if="diaryHistoryOpen" class="pc-diary-list">
-            <button v-for="entry in diaryPast" :key="entry.id" type="button" class="pc-deck-session" @click="openPastDiary(entry)">
-              <span class="pc-deck-session-title">{{ entry.title }}</span>
-              <span class="pc-deck-session-mark">{{ entry.localDate }}</span>
-            </button>
-            <p v-if="!diaryPast.length && !diaryError" class="pc-deck-empty">还没有往期日记。</p>
-          </div>
-          <p v-else-if="!diaryShown" class="pc-deck-empty">{{ diaryError ? '请重试读取日记。' : '今天还没写。点「写一篇」记下来。' }}</p>
-          <p v-else class="pc-diary-text">{{ diaryBody }}</p>
-        </div>
-        <div class="pc-deck-foot">
-          <component :is="'md-text-button'" v-if="diaryViewing" type="button" @click="closePastDiary()">回到今天</component>
-          <component :is="'md-text-button'" v-else type="button" @click="diaryHistoryOpen = !diaryHistoryOpen">{{ diaryHistoryOpen ? '收起' : '往期' }}</component>
-        </div>
+        <DiaryView :title="diaryTitle" :body="diaryBody" :busy="diaryBusy" :writing="diaryWriting" :has-today="!!diaryToday"
+          :has-shown="!!diaryShown" :viewing-past="!!diaryViewing" :history-open="diaryHistoryOpen" :past="diaryPast"
+          :error="diaryError" :note="diaryNote" :write-disabled="chatPending"
+          @write="writeDiary" @refresh="loadDiary(true)" @toggle-history="diaryHistoryOpen = !diaryHistoryOpen"
+          @select="openPastDiary" @today="closePastDiary" />
       </div>
-      <p v-if="diaryNote" class="pc-deck-hint" role="status">{{ diaryNote }}</p>
-      <p v-if="diaryError" class="pc-deck-hint pc-diary-error" role="alert">{{ diaryError }}</p>
-      <component v-if="diaryError" :is="'md-text-button'" type="button" :disabled="diaryBusy" @click="loadDiary(true)">重试读取日记</component>
     </section>
     </div>
     <div v-if="material3" class="pc-deck-dots" role="tablist" aria-label="卡片切换">
@@ -1021,39 +1025,25 @@ onBeforeUnmount(() => {
       <component :is="buttonTag('md-text-button')" type="button" :disabled="interactionBusy || sending" @click="decideApproval('denied')">拒绝</component>
     </section>
 
-    <Teleport :to="mobileSuggestionRegion" :disabled="!material3 || !mobileSuggestionRegion">
-    <section v-if="!whisperOpen && suggestions.length" class="pc-choices" aria-label="今日建议">
-      <component :is="buttonTag('button')"
-        v-for="(card, index) in suggestions"
-        :key="card.key"
-        type="button"
-        class="pc-choice"
-        :class="{ 'pc-choice--primary': card.primary && (!material3 || index === 0) }"
-        :disabled="sending || material3 && (sessionSwitchLocked || !sessionsReady)"
-        @click="card.action"
-      >
-        <component v-if="material3" :is="'md-ripple'" aria-hidden="true" />
-        <span class="pc-choice-label">{{ card.label }}</span>
-        <span class="pc-choice-reason">{{ card.reason }}</span>
-      </component>
-    </section>
-    </Teleport>
-    <ExtensionSlot name="companion:cards" wrapper-class="pc-plugin-cards" />
+    <nav class="pc-home-nav" aria-label="首页入口">
+      <button type="button" class="pc-home-entry" :class="{ 'pc-home-entry--material3': material3 }" :disabled="!resumeSession" @click="openResume">
+        <span>接着上次</span><small>{{ resumeSession ? `${resumeSession.title} · ${relativeDay(resumeSession.updatedAt)}` : '尚未选择会话' }}</small>
+      </button>
+      <button type="button" class="pc-home-entry" :class="{ 'pc-home-entry--material3': material3 }" @click="todayOpen = true"><span>今日</span><small>学习与复习</small></button>
+      <button type="button" class="pc-home-entry" :class="{ 'pc-home-entry--material3': material3 }" @click="sessionsOpen = true"><span>记录</span><small>已保存的会话</small></button>
+      <button type="button" class="pc-home-entry" :class="{ 'pc-home-entry--material3': material3 }" @click="openDiary"><span>日记</span><small>今天与往期</small></button>
+    </nav>
     <p v-if="pluginLoadError" class="pc-mobile-session-feedback" role="alert">扩展加载失败。<button type="button" @click="refreshPluginUI().catch(() => undefined)">重试加载</button></p>
     </main>
 
     <!-- Keep the same feedback and actions outside the phone's scrolling stage. -->
     <div v-if="material3" ref="mobileFeedbackRegion" class="pc-mobile-feedback" />
     <p v-if="preparingSession || sessionChanging" class="pc-mobile-preparing" role="status">正在准备新对话，草稿会保留…</p>
-    <p v-if="material3 && sessionFeedback" class="pc-mobile-session-feedback" role="alert">{{ sessionFeedback }}</p>
+    <p v-if="sessionFeedback" class="pc-mobile-session-feedback" role="alert">{{ sessionFeedback }}</p>
     <p v-if="material3 && dictationFeedback" class="pc-mobile-status" role="status">{{ dictationFeedback }}</p>
-    <aside class="pc-whisper" :class="{ 'pc-whisper--open': whisperOpen }" aria-label="对话输入">
-      <template v-if="!whisperOpen && !material3">
-        <component :is="buttonTag('md-filled-tonal-button')" ref="whisperPill" type="button" class="pc-whisper-pill" @click="openWhisper"><MessageSquare :slot="material3 ? 'icon' : undefined" :size="material3 ? 20 : 15" aria-hidden="true" /><span>悄悄对{{ companionName }}说…</span></component>
-        <component :is="buttonTag('md-filled-tonal-button')" v-if="canStop" type="button" class="pc-stop" :disabled="stopping" @click="stopTurn"><Square :slot="material3 ? 'icon' : undefined" :size="material3 ? 18 : 12" aria-hidden="true" />{{ stopping ? '停止中' : '停止' }}</component>
-      </template>
-      <div v-else class="pc-whisper-input">
-        <span v-if="material3 && attachment" class="pc-attachment-chip">
+    <aside class="pc-whisper pc-whisper--open" aria-label="对话输入">
+      <div class="pc-whisper-input">
+        <span v-if="attachment" class="pc-attachment-chip">
           <Paperclip :size="13" aria-hidden="true" />{{ attachment.name }}
           <button type="button" class="pc-attachment-remove" aria-label="移除附件" @click="attachment = null; persistAttachment()"><X :size="12" aria-hidden="true" /></button>
         </span>
@@ -1061,19 +1051,35 @@ onBeforeUnmount(() => {
         <textarea v-if="material3" :readonly="preparingSession || sessionChanging" id="pc-material-whisper" ref="whisperInput" v-model="whisperText" rows="1"
           :aria-label="'悄悄对' + companionName + '说'" placeholder="输入消息…" enterkeyhint="enter"
           @focus="openWhisper()" @input="scheduleWhisperResize" @keydown="onWhisperKeydown" />
-        <input v-else ref="whisperInput" v-model="whisperText" :aria-label="'悄悄对' + companionName + '说'"
+        <input v-else ref="whisperInput" v-model="whisperText" :readonly="preparingSession || sessionChanging" :aria-label="'悄悄对' + companionName + '说'"
           :placeholder="'想到什么，直接告诉' + companionName" enterkeyhint="send" @keydown="onWhisperKeydown" />
         <component :is="buttonTag('md-filled-tonal-button')" v-if="canStop" type="button" class="pc-stop" :disabled="stopping" @click="stopTurn"><Square :slot="material3 ? 'icon' : undefined" :size="material3 ? 18 : 12" aria-hidden="true" />{{ stopping ? '停止中' : '停止' }}</component>
-        <component :is="buttonTag('md-filled-button')" v-else type="button" :disabled="!whisperText.trim() || material3 && (sessionSwitchLocked || !sessionsReady)" @click="sendWhisper()">发送</component>
-                <component :is="buttonTag('md-icon-button')" type="button" v-if="!material3" class="pc-whisper-close" title="收起" aria-label="收起输入" @click="closeWhisper"><X :size="18" aria-hidden="true" /></component>
+        <component :is="buttonTag('md-filled-button')" v-else type="button" :disabled="!whisperText.trim() || sessionSwitchLocked || !sessionsReady" @click="sendWhisper()">发送</component>
       </div>
     </aside>
-    <MobileSessionsDialog v-if="material3" v-model="sessionsOpen" :sessions="sessions.sessions.value" :active-session-id="sessions.activeSessionId.value"
-      :loading="sessions.loading.value" :error="sessionListError" :notice="sessionCreationError || sessionFeedback" :changing="sessionChanging" :switch-locked="sessionSwitchLocked" :lock-reason="switchLockReason"
+    <MobileSessionsDialog v-model="sessionsOpen" :sessions="sessions.sessions.value" :active-session-id="sessions.activeSessionId.value"
+      :has-more="sessions.hasMore.value" :loading="sessions.loading.value" :error="sessionListError" :notice="sessionCreationError || sessionFeedback" :changing="sessionChanging" :switch-locked="sessionSwitchLocked" :lock-reason="switchLockReason"
       :managing="sessionManaging" :manage-error="sessionManageError"
-      @refresh="refreshMobileSessions" @new="createMobileSession" @select="selectMobileSession" @history="session => openMobileHistory(session.id, session.title)"
+      @refresh="refreshMobileSessions" @more="loadMoreSessions" @new="createMobileSession" @select="selectMobileSession" @history="session => openMobileHistory(session.id, session.title)"
       @rename="renameMobileSession" @delete="deleteMobileSession" />
-    <MobileHistoryDialog v-if="material3" v-model="historyOpen" :session-id="historySessionId" :title="historyTitle" />
+    <MobileHistoryDialog v-model="historyOpen" :session-id="historySessionId" :title="historyTitle" />
+    <AervoxDialog v-model="todayOpen" title="今日" :destroy-on-close="false" body-max-height="calc(100dvh - 180px)">
+      <p>从已有学习记录或日记继续。打开入口不会发送消息。</p>
+      <button v-if="learningPanel" type="button" class="pc-home-entry" :class="{ 'pc-home-entry--material3': material3 }" @click="openLearning"><BookOpen :size="18" aria-hidden="true" />学习与复习</button>
+      <ExtensionSlot name="companion:cards" wrapper-class="pc-plugin-cards" />
+      <p v-if="!learningPanel && !registry.getSlotComponents('companion:cards').length">当前宿主未提供学习入口。</p>
+      <button type="button" class="pc-home-entry" :class="{ 'pc-home-entry--material3': material3 }" @click="openDiary">打开日记</button>
+    </AervoxDialog>
+    <AervoxDialog v-if="learningPanel" v-model="learningOpen" title="学习与复习" :destroy-on-close="false" body-max-height="calc(100dvh - 180px)">
+      <component :is="learningPanel" />
+    </AervoxDialog>
+    <AervoxDialog v-if="!material3" v-model="diaryOpen" title="日记" :destroy-on-close="false" body-max-height="calc(100dvh - 180px)">
+      <DiaryView :title="diaryTitle" :body="diaryBody" :busy="diaryBusy" :writing="diaryWriting" :has-today="!!diaryToday"
+          :has-shown="!!diaryShown" :viewing-past="!!diaryViewing" :history-open="diaryHistoryOpen" :past="diaryPast"
+          :error="diaryError" :note="diaryNote" :write-disabled="chatPending"
+          @write="writeDiary" @refresh="loadDiary(true)" @toggle-history="diaryHistoryOpen = !diaryHistoryOpen"
+          @select="openPastDiary" @today="closePastDiary" />
+    </AervoxDialog>
     <MobileSettingsDialog v-model="settingsOpen" :panels="props.settingsPanels" />
     <ExtensionSlot name="companion:drawers" />
   </div>
@@ -1165,6 +1171,45 @@ onBeforeUnmount(() => {
   scroll-padding-block: 16px;
 }
 .pc-content > * { min-width: 0; }
+.pc-home-nav { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; width: 100%; max-width: 620px; justify-self: center; }
+.pc-home-entry { display: flex; flex-direction: column; justify-content: center; gap: 6px; min-width: 0; min-height: 52px; padding: 10px 12px; border: 1px solid var(--pc-line, var(--border)); border-radius: 14px; background: var(--pc-card, var(--bg-card)); color: var(--pc-ink, var(--text-primary)); font: inherit; cursor: pointer; text-align: left; }
+.pc-home-entry small { font-size: 11px; line-height: 16px; color: var(--pc-ink-3, var(--text-secondary)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pc-home-entry:disabled { opacity: .6; cursor: default; }
+.pc-home-entry:focus-visible { outline: 2px solid var(--pc-accent, var(--accent)); outline-offset: 2px; }
+.pc-home-entry--material3 {
+  min-height: 56px; background: var(--md-sys-color-surface-container); color: var(--md-sys-color-on-surface);
+  border-color: var(--md-sys-color-outline-variant); font-size: 14px; line-height: 20px;
+}
+.pc-home-entry--material3 small { color: var(--md-sys-color-on-surface-variant); }
+.proactive-companion[data-design-system="material3"] .pc-home-nav > .pc-home-entry:first-child:not(:disabled) {
+  background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container); border-color: transparent;
+}
+.proactive-companion[data-design-system="material3"] .pc-home-nav > .pc-home-entry:first-child:not(:disabled) small { color: var(--md-sys-color-on-primary-container); }
+.pc-home-entry--material3:hover:not(:disabled),
+.pc-home-entry--material3:active:not(:disabled) {
+  background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container);
+}
+.pc-home-entry--material3:hover:not(:disabled) small,
+.pc-home-entry--material3:active:not(:disabled) small { color: var(--md-sys-color-on-primary-container); }
+.pc-home-entry--material3:disabled {
+  opacity: 1; background: var(--md-sys-color-surface-container); color: color-mix(in srgb, var(--md-sys-color-on-surface) 38%, transparent);
+}
+.pc-home-entry--material3:disabled small { color: color-mix(in srgb, var(--md-sys-color-on-surface) 38%, transparent); }
+.pc-home-entry--material3:focus-visible { outline-color: var(--md-sys-color-primary); }
+@media (max-width: 499px) { .pc-home-nav { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.proactive-companion[data-design-system="material3"] .pc-home-nav {
+  grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px;
+}
+.proactive-companion[data-design-system="material3"] .pc-home-nav > .pc-home-entry {
+  min-height: 56px; gap: 4px; padding: 8px 6px;
+}
+.proactive-companion[data-design-system="material3"] .pc-home-nav > .pc-home-entry span,
+.proactive-companion[data-design-system="material3"] .pc-home-nav > .pc-home-entry small {
+  width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+@media (max-width: 899px) and (min-height: 521px) {
+  .proactive-companion[data-design-system="material3"][data-platform="mobile"] .pc-content { gap: 10px; padding-block: 10px 12px; }
+}
 
 /* 舞台跟随内容流；手机的对话层可覆盖角色下半身。 */
 .pc-stage {
@@ -1193,47 +1238,7 @@ onBeforeUnmount(() => {
     overflow: hidden;
     height: clamp(280px, 42dvh, 480px);
   }
-  /* 建议贴在角色身上说话：悬浮在卡片上缘的一条玻璃建议，不再占页面末尾的位置。
-     bottom 需大于卡片上提量里的名牌区，否则会被卡片扑住。 */
-  .proactive-companion[data-platform="mobile"] .pc-stage-suggestions {
-    position: absolute; inset-inline: 2px; bottom: 60px;
-    display: grid; gap: 8px; z-index: 2;
-    pointer-events: none;
-  }
-  .proactive-companion[data-platform="mobile"] .pc-stage-suggestions .pc-choices {
-    display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px;
-    margin: 0; pointer-events: auto;
-  }
-  .proactive-companion[data-platform="mobile"] .pc-stage-suggestions .pc-choice {
-    position: relative; isolation: isolate;
-    min-height: 0; padding: 8px 14px; border-radius: 16px;
-    flex-direction: row; align-items: center; gap: 10px;
-    /* The glass treatment must not out-specify the Material 3 role colours:
-       keep the tonal background here and layer the sheen on top of it, so a
-       primary suggestion still tracks --md-sys-color-primary-container. */
-    background: var(--pc-card, #171b22);
-    border: 1px solid var(--pc-line, rgba(255,255,255,.10));
-    box-shadow: 0 10px 26px -14px rgba(0,0,0,.5);
-  }
-  .proactive-companion[data-platform="mobile"] .pc-stage-suggestions .pc-choice::before {
-    content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none;
-    border-radius: inherit; backdrop-filter: blur(14px);
-    background: linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.03));
-  }
-  .proactive-companion[data-design-system="material3"] .pc-stage-suggestions .pc-choice {
-    background: var(--md-sys-color-surface-container);
-    border-color: var(--md-sys-color-outline-variant);
-  }
-  .proactive-companion[data-design-system="material3"] .pc-stage-suggestions .pc-choice--primary {
-    background: var(--md-sys-color-primary-container);
-    border-color: transparent;
-  }
-  .proactive-companion[data-platform="mobile"] .pc-stage-suggestions .pc-choice-label { flex: 0 0 auto; font-size: 14px; line-height: 20px; }
-  .proactive-companion[data-platform="mobile"] .pc-stage-suggestions .pc-choice-reason {
-    flex: 1 1 auto; min-width: 0; margin-top: 0;
-    font-size: 12px; line-height: 18px;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
+
   .proactive-companion[data-platform="mobile"] .pc-pet-wrap {
     /* 角色按画布高度等比缩放到撑满（fitLive2DModelToViewport 只吃高度）：
        所以这里给得比舞台高，人物就更大；多出来的部分由舞台裁掉。 */
@@ -1373,31 +1378,6 @@ onBeforeUnmount(() => {
 .pc-feedback-action:hover { background: var(--pc-accent-soft); }
 .pc-feedback-action:disabled { color: var(--pc-ink-3); cursor: default; }
 
-/* 建议卡留在滚动内容中，输入固定在独立底栏。 */
-.pc-choices {
-  width: 100%; max-width: 620px; min-width: 0;
-  justify-self: center;
-  display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px;
-}
-.pc-choices.pc-choices--hidden,
-.proactive-companion:has(.pc-whisper--open) .pc-choices { display: none; }
-.pc-choice {
-  min-width: 0; min-height: 44px;
-  text-align: left; cursor: pointer; font-family: inherit;
-  background: var(--pc-card); border: 1px solid var(--pc-line); border-radius: var(--pc-radius);
-  padding: 14px 18px 13px; color: var(--pc-ink);
-  transition: transform .18s var(--pc-ease), border-color .18s, box-shadow .18s;
-  display: flex; flex-direction: column;
-  white-space: normal; overflow-wrap: anywhere;
-}
-.pc-choice:hover:not(:disabled) { transform: translateY(-2px); border-color: rgba(128, 134, 146, .4); box-shadow: 0 8px 24px -10px rgba(23, 24, 26, .14); }
-.pc-choice:disabled { opacity: .55; cursor: default; }
-.pc-choice-label { font-size: 13.5px; font-weight: 600; letter-spacing: .02em; }
-.pc-choice-reason { font-size: 11.5px; color: var(--pc-ink-3); margin-top: 5px; line-height: 1.5; }
-.pc-choice--primary { border-color: color-mix(in srgb, var(--pc-accent) 40%, transparent); background: linear-gradient(180deg, var(--pc-accent-soft), transparent 60%), var(--pc-card); }
-.pc-choice--primary .pc-choice-label { color: var(--pc-accent); }
-.pc-choice--primary .pc-choice-label::before { content: ""; display: inline-block; width: 5px; height: 5px; margin-right: 8px; border-radius: 50%; background: currentColor; vertical-align: 2px; }
-
 /* 悄悄话底栏随 visual viewport 缩放，始终留出安全区。 */
 .pc-whisper {
   z-index: 6;
@@ -1411,15 +1391,7 @@ onBeforeUnmount(() => {
 .pc-stop { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-width: 44px; min-height: 44px; margin-left: 8px; padding: 8px 12px; border: 1px solid var(--pc-line); border-radius: 10px; background: var(--pc-card); color: var(--pc-ink); font: inherit; font-size: 12px; cursor: pointer; }
 .pc-stop:disabled { opacity: .5; cursor: default; }
 .pc-stop:focus-visible { outline: 2px solid var(--pc-accent); outline-offset: 3px; }
-.pc-whisper-pill {
-  display: flex; align-items: center; gap: 7px;
-  max-width: 100%; min-height: 44px;
-  border: 1px solid var(--pc-line); background: var(--pc-card); border-radius: 999px;
-  padding: 9px 16px; font-size: 12px; color: var(--pc-ink-3); cursor: text; font-family: inherit;
-  white-space: normal; overflow-wrap: anywhere;
-  box-shadow: 0 1px 2px rgba(23, 24, 26, .04);
-}
-.pc-whisper-pill:hover { color: var(--pc-ink-2); border-color: rgba(128, 134, 146, .4); }
+
 .pc-whisper--open { justify-content: center; }
 .pc-whisper-input {
   display: flex; width: 100%; max-width: 620px; min-width: 0; align-items: center; gap: 6px;
@@ -1440,18 +1412,17 @@ onBeforeUnmount(() => {
   padding: 8px 12px; font-size: 12px; cursor: pointer; font-family: inherit;
 }
 .pc-whisper-input button:disabled { opacity: .5; cursor: default; }
-.pc-whisper-close { background: transparent !important; color: var(--pc-ink-3) !important; padding: 8px !important; }
+.pc-attachment-chip { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 40%; font-size: 12px; line-height: 18px; overflow: hidden; white-space: nowrap; }
+
 .pc-quiet-btn:focus-visible,
-.pc-choice:focus-visible,
-.pc-whisper-pill:focus-visible,
 .pc-feedback-action:focus-visible,
 .pc-whisper-input button:focus-visible { outline: 2px solid var(--pc-accent); outline-offset: 3px; }
 .pc-whisper-input:focus-within { border-color: var(--pc-accent); }
-.pc-quiet-btn, .pc-whisper-pill, .pc-stop, .pc-feedback-action, .pc-whisper-input button { transition: color .18s, background .18s, transform .18s var(--pc-ease); }
-.pc-quiet-btn:active, .pc-choice:active:not(:disabled), .pc-whisper-pill:active, .pc-stop:active:not(:disabled), .pc-feedback-action:active:not(:disabled), .pc-whisper-input button:active:not(:disabled) { transform: scale(.98) translateY(1px); }
+.pc-quiet-btn, .pc-stop, .pc-feedback-action, .pc-whisper-input button { transition: color .18s, background .18s, transform .18s var(--pc-ease); }
+.pc-quiet-btn:active, .pc-stop:active:not(:disabled), .pc-feedback-action:active:not(:disabled), .pc-whisper-input button:active:not(:disabled) { transform: scale(.98) translateY(1px); }
 
 @media (min-width: 520px) {
-  .pc-choices { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
   .pc-dialogue-box { padding: 20px 24px 18px; }
 }
 .pc-plugin-cards { min-width: 0; display: grid; gap: 16px; }
@@ -1467,7 +1438,7 @@ onBeforeUnmount(() => {
   .pc-stage { grid-column: 1; grid-row: 1 / 3; align-self: center; }
   .pc-pet-wrap { width: min(420px, 100%); height: clamp(340px, 55dvh, 560px); }
   .pc-dialogue { grid-column: 2; grid-row: 1; align-self: end; }
-  .pc-choices { grid-column: 2; grid-row: 2; }
+  .pc-home-nav { grid-column: 2; grid-row: 2; }
   .pc-plugin-cards { grid-column: 2; }
   .pc-whisper { padding-inline: max(24px, env(safe-area-inset-left, 0px)) max(24px, env(safe-area-inset-right, 0px)); }
 }
@@ -1483,10 +1454,10 @@ onBeforeUnmount(() => {
   padding-block: 8px 12px;
 }
 .proactive-companion.pc-viewport--short .pc-dialogue,
-.proactive-companion.pc-viewport--short .pc-choices,
+.proactive-companion.pc-viewport--short .pc-home-nav,
 .proactive-companion.pc-viewport--short .pc-plugin-cards,
 .pc-viewport--short .pc-dialogue,
-.pc-viewport--short .pc-choices,
+.pc-viewport--short .pc-home-nav,
 .pc-viewport--short .pc-plugin-cards { grid-column: auto; grid-row: auto; }
 .proactive-companion[data-platform="mobile"].pc-viewport--short .pc-dialogue,
 .proactive-companion[data-platform="mobile"].pc-viewport--short .pc-deck-track { margin-block-start: 0; }
@@ -1508,13 +1479,13 @@ onBeforeUnmount(() => {
     grid-template-columns: minmax(0, 1fr); grid-template-rows: none;
     grid-auto-rows: max-content; align-content: start; gap: 12px; padding-block: 8px 12px;
   }
-  .pc-dialogue, .pc-choices, .pc-plugin-cards { grid-column: auto; grid-row: auto; }
+  .pc-dialogue, .pc-home-nav, .pc-plugin-cards { grid-column: auto; grid-row: auto; }
   .proactive-companion[data-platform="mobile"] .pc-dialogue,
   .proactive-companion[data-platform="mobile"] .pc-deck-track { margin-block-start: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   .pc-caret, .pc-waiting-dots i { animation: none; }
-  .pc-choice, .pc-quiet-btn, .pc-whisper-pill, .pc-stop, .pc-feedback-action, .pc-whisper-input button { transition: none; }
+  .pc-home-entry, .pc-quiet-btn, .pc-stop, .pc-feedback-action, .pc-whisper-input button { transition: none; }
 }
 
 /* Android: Material 3 roles and official component states. The composition
@@ -1567,19 +1538,7 @@ onBeforeUnmount(() => {
 .proactive-companion[data-design-system="material3"] .pc-dialogue-ctx { font-size: 12px; line-height: 16px; letter-spacing: .4px; }
 .proactive-companion[data-design-system="material3"] .pc-dialogue-waiting { display: grid; gap: 12px; margin: 0; font-size: 14px; line-height: 20px; }
 .pc-material-progress { width: min(160px, 100%); }
-.proactive-companion[data-design-system="material3"] .pc-choices { gap: 12px; }
-.proactive-companion[data-design-system="material3"] .pc-choice {
-  position: relative; isolation: isolate; min-height: 88px; padding: 16px 20px;
-  justify-content: center; border: 0; border-radius: 16px;
-  background: var(--md-sys-color-surface-container); color: var(--md-sys-color-on-surface);
-  box-shadow: none; transform: none; overflow: hidden;
-}
-.proactive-companion[data-design-system="material3"] .pc-choice:hover:not(:disabled) { transform: none; box-shadow: none; }
-.proactive-companion[data-design-system="material3"] .pc-choice--primary { background: var(--md-sys-color-primary-container); color: var(--md-sys-color-on-primary-container); }
-.proactive-companion[data-design-system="material3"] .pc-choice-label { font-size: 16px; line-height: 24px; font-weight: 500; letter-spacing: .15px; color: inherit; }
-.proactive-companion[data-design-system="material3"] .pc-choice--primary .pc-choice-label::before { display: none; }
-.proactive-companion[data-design-system="material3"] .pc-choice-reason { margin-top: 4px; font-size: 12px; line-height: 18px; letter-spacing: .25px; color: var(--md-sys-color-on-surface-variant); }
-.proactive-companion[data-design-system="material3"] .pc-choice--primary .pc-choice-reason { color: var(--md-sys-color-on-primary-container); }
+
 .proactive-companion[data-design-system="material3"] .pc-feedback {
   gap: 4px 12px; margin: 8px 0; padding: 12px 16px; border-radius: 16px;
   color: var(--md-sys-color-on-surface-variant); background: var(--md-sys-color-surface-container-high);
@@ -1588,13 +1547,7 @@ onBeforeUnmount(() => {
 .proactive-companion[data-design-system="material3"] .pc-feedback[data-kind$="error"] { background: var(--md-sys-color-error-container); color: var(--md-sys-color-on-error-container); }
 .proactive-companion[data-design-system="material3"] .pc-feedback-action { min-height: 48px; padding: 0; background: transparent; font-weight: 500; border-radius: 24px; }
 .proactive-companion[data-design-system="material3"] .pc-whisper { gap: 8px; align-items: center; background: transparent; }
-.proactive-companion[data-design-system="material3"] .pc-whisper-pill {
-  --md-filled-tonal-button-container-height: 48px;
-  flex: 1 1 auto; min-width: 0; min-height: 48px; padding: 0; border: 0; box-shadow: none;
-  font-size: 14px; line-height: 20px;
-  color: var(--md-sys-color-on-secondary-container); background: transparent; border-radius: 24px;
-}
-.proactive-companion[data-design-system="material3"] .pc-whisper-pill svg { width: 20px; height: 20px; }
+
 .proactive-companion[data-design-system="material3"] .pc-stop {
   --md-filled-tonal-button-container-height: 48px;
   margin: 0; min-height: 48px; border: 0; padding: 0; border-radius: 24px; background: transparent;
@@ -1625,9 +1578,8 @@ onBeforeUnmount(() => {
   background: var(--md-sys-color-surface-container-low); color: var(--md-sys-color-on-surface);
 }
 .proactive-companion[data-design-system="material3"] .pc-interaction > md-filled-button { margin-inline-end: 8px; }
-.proactive-companion[data-design-system="material3"] .pc-choice:focus-visible,
 .proactive-companion[data-design-system="material3"] .pc-whisper-input:focus-within { outline: 3px solid var(--md-sys-color-primary); outline-offset: 3px; }
-.proactive-companion[data-design-system="material3"] :is(.pc-quiet-btn, .pc-whisper-pill, .pc-stop, .pc-feedback-action, .pc-whisper-close):active { transform: none; }
+.proactive-companion[data-design-system="material3"] :is(.pc-quiet-btn, .pc-stop, .pc-feedback-action):active { transform: none; }
 .proactive-companion[data-design-system="material3"].pc-viewport--short .pc-content { padding-block: 12px; gap: 16px; }
 @media (max-width: 359px) {
   .proactive-companion[data-design-system="material3"] .pc-dialogue-box { padding: 16px; }
@@ -1734,13 +1686,7 @@ onBeforeUnmount(() => {
   border-radius: 999px; min-width: 44px; padding-inline: 16px;
 }
 .proactive-companion[data-design-system="material3"] .pc-whisper-label { font-size: 11px; letter-spacing: .02em; opacity: .72; }
-.proactive-companion[data-design-system="material3"] .pc-choice {
-  border-radius: 18px; padding: 15px 17px;
-}
-.proactive-companion[data-design-system="material3"] .pc-choice--primary {
-  background: linear-gradient(135deg, color-mix(in srgb, var(--pc-accent, #9b7aff) 26%, transparent), color-mix(in srgb, var(--pc-accent, #9b7aff) 10%, transparent));
-  border-color: color-mix(in srgb, var(--pc-accent, #9b7aff) 42%, transparent);
-}
+
 .proactive-companion[data-design-system="material3"] .pc-current-session { margin-block-end: 2px; }
 /* 名牌压在角色身上时保持可读：给一层贴近底色的圆角衬底。 */
 .proactive-companion[data-design-system="material3"] .pc-dialogue-name {
