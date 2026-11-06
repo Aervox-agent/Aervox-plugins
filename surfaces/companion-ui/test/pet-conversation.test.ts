@@ -1,7 +1,7 @@
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils';
 import { UISurfaceHost } from '@aervox/ui-host';
-import { configureAervoxClient, type TurnCallbacks } from '@aervox/api-client';
+import { AervoxHttpError, configureAervoxClient, type TurnCallbacks } from '@aervox/api-client';
 import definition from '../src';
 
 enableAutoUnmount(afterEach);
@@ -83,4 +83,64 @@ it('keeps partial output visible after a terminal interruption and clears stale 
   expect(wrapper.get('.pet-turn-feedback').text()).toContain('本次回复未完成');
   expect(wrapper.find('.pet-question').exists()).toBe(false);
   expect(wrapper.find('.pet-choices').exists()).toBe(false);
+});
+
+async function petQuestion() {
+  let forward!: TurnCallbacks;
+  const question = { turnId: 'turn_issue', attemptId: 'attempt', invocationId: 'attempt:1:1', identityStatus: 'available' as const,
+    step: 1, questions: [{ id: 'topic', question: '选主题', options: [{ label: 'A' }] }] };
+  streamTurn.mockImplementation(async (_session,_content,callbacks,options) => { forward = callbacks; await options.onAccepted(question.turnId); callbacks.onUserQuestion(question); callbacks.onDone(); });
+  const wrapper = await pet();
+  await wrapper.get('.uq-option-btn').trigger('click'); await wrapper.get('.uq-custom-input input').setValue('保留补充说明');
+  return { wrapper, question, callbacks: () => forward };
+}
+it.each([
+  { code: 'QUESTION_EXPIRED', message: '问题已结束，无法继续作答。', disabled: true },
+  { code: 'QUESTION_IDENTITY_UNAVAILABLE', message: '旧问题无法继续作答。', disabled: true },
+  { code: undefined, message: '暂时无法确认提交结果，请再试一次。', disabled: false },
+])('shows one scoped pet submission notice for $code', async ({ code, message, disabled }) => {
+  submitQuestionAnswers.mockRejectedValueOnce(code ? new AervoxHttpError(409, 'native', { code, message: 'private transport details' }) : new Error('private transport details'));
+  const { wrapper } = await petQuestion();
+  await wrapper.get('.uq-submit-btn').trigger('click'); await flushPromises();
+  expect(wrapper.findAll('.pet-question .uq-feedback')).toHaveLength(1);
+  expect(wrapper.get('.uq-feedback').text()).toBe(message);
+  expect(wrapper.find('.pet-turn-feedback').exists()).toBe(false);
+  expect(wrapper.text()).not.toContain('private transport details');
+  expect(wrapper.get('.uq-submit-btn').attributes('disabled') !== undefined).toBe(disabled);
+  expect(wrapper.get('.uq-custom-input input').attributes('disabled') !== undefined).toBe(disabled);
+  expect((wrapper.get('.uq-custom-input input').element as HTMLInputElement).value).toBe('保留补充说明');
+});
+it('keeps a pet question replay notice and resets it for the next original question', async () => {
+  submitQuestionAnswers.mockRejectedValueOnce(new Error('offline'));
+  const { wrapper, question, callbacks } = await petQuestion();
+  await wrapper.get('.uq-submit-btn').trigger('click'); await flushPromises();
+  callbacks().onUserQuestion?.({ ...question }); await flushPromises();
+  expect(wrapper.get('.uq-feedback').text()).toBe('暂时无法确认提交结果，请再试一次。');
+  expect((wrapper.get('.uq-custom-input input').element as HTMLInputElement).value).toBe('保留补充说明');
+  const next = { ...question, invocationId: 'attempt:2:1', step: 2, questions: [{ id: 'next', question: '新的问题' }] };
+  callbacks().onUserQuestion?.(next); await flushPromises();
+  expect(wrapper.find('.uq-feedback').exists()).toBe(false);
+  expect(wrapper.get('.pet-question').text()).toContain('新的问题');
+});
+it('does not attach a late pet save failure to the next question', async () => {
+  let rejectSave!: (error: Error) => void;
+  submitQuestionAnswers.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectSave = reject; }));
+  const { wrapper, question, callbacks } = await petQuestion();
+  await wrapper.get('.uq-submit-btn').trigger('click');
+  const next = { ...question, invocationId: 'attempt:2:1', step: 2, questions: [{ id: 'next', question: '新的问题' }] };
+  callbacks().onUserQuestion?.(next); rejectSave(new AervoxHttpError(409, 'native', { code: 'QUESTION_EXPIRED' })); await flushPromises();
+  expect(wrapper.find('.uq-feedback').exists()).toBe(false);
+  expect(wrapper.find('.pet-turn-feedback').exists()).toBe(false);
+  expect(wrapper.get('.uq-custom-input input').attributes('disabled')).toBeUndefined();
+});
+it('preserves a newer pet question notice when an original retry succeeds', async () => {
+  let save!: () => void;
+  submitQuestionAnswers.mockRejectedValueOnce(new Error('offline')).mockImplementationOnce(() => new Promise<void>(resolve => { save = resolve; }));
+  const { wrapper, question, callbacks } = await petQuestion();
+  await wrapper.get('.uq-submit-btn').trigger('click'); await flushPromises(); await wrapper.get('.uq-submit-btn').trigger('click');
+  const next = { ...question, invocationId: 'attempt:2:1', step: 2, identityStatus: 'identity_unavailable' as const, questions: [{ id: 'next', question: '新的问题' }] };
+  callbacks().onUserQuestion?.(next); save(); await flushPromises();
+  expect(wrapper.get('.uq-feedback').text()).toBe('旧问题无法继续作答。');
+  expect(wrapper.get('.uq-submit-btn').attributes('disabled')).toBeDefined();
+  expect(wrapper.get('.pet-question').text()).toContain('新的问题');
 });

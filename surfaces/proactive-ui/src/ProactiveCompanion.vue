@@ -12,11 +12,11 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch,
 import { useUISurfaceContext } from '@aervox/ui-host';
 import { useMaterial3 } from '@aervox/ui/material3';
 import { AervoxDialog, ExtensionSlot } from '@aervox/ui/primitives';
-import { AervoxBrandMark, CompanionAvatar, UserQuestionComposer, readCompanionIdentity, useSessionDraft, useCompanionAvatarBinding } from '@aervox/ui/companion';
+import { AervoxBrandMark, CompanionAvatar, UserQuestionComposer, getQuestionSubmissionIssue, isSameOriginalQuestion, readCompanionIdentity, useSessionDraft, useCompanionAvatarBinding, type QuestionSubmissionIssue } from '@aervox/ui/companion';
 import { AervoxHttpError, createConversationController, getClientTransport, useAervoxApi, useAervoxPlugins, useAervoxSessions } from '@aervox/api-client';
 import { createUIRegistry, provideUIRegistry, createWorkbenchPluginRuntime, createPluginEventBus, createPluginStateStore, provideUIPluginContext, resolveOutgoingMessage, type BuiltinUIPlugin, type UIPluginContext } from '@aervox/ui/plugin-api';
 import { ArrowUpRight, BookOpen, Copy, History, Mic, Paperclip, RotateCcw, Settings, Square, Volume2, X } from 'lucide-vue-next';
-import type { AskUserQuestionAnswerItem } from '@aervox/contracts';
+import type { AskUserQuestionAnswerItem, UserQuestionRequiredEventData } from '@aervox/contracts';
 import { useDialogueTyper } from './dialogue-typer';
 import MobileSettingsDialog from './MobileSettingsDialog.vue';
 import MobileSessionsDialog from './MobileSessionsDialog.vue';
@@ -51,8 +51,10 @@ const learning = useAervoxApi();
 const pluginLoadError = ref(false);
 const pluginLoadNotice = ref(false);
 const material3 = useMaterial3();
+const materialMobile = material3 && surface.platform === 'mobile';
 const mobileScreen = ref<HTMLElement>();
 const dialogueFeedbackRegion = ref<HTMLElement>();
+const mobileInteractionRegion = ref<HTMLElement>();
 const mobileHomeActionsRegion = ref<HTMLElement>();
 // The Android composition root registers the official Material Web elements.
 // Other hosts keep their existing native controls and visual language.
@@ -325,6 +327,18 @@ const failedTurn = shallowRef<FailedTurn>();
 const turnController = createConversationController(clientTransport, surface.signal);
 const conversationState = ref(turnController.state);
 const unsubscribeConversation = turnController.subscribe(state => { conversationState.value = state; });
+const questionSubmissionFailure = shallowRef<{ question: UserQuestionRequiredEventData; issue: QuestionSubmissionIssue }>();
+const questionSubmissionIssue = computed(() => isSameOriginalQuestion(questionSubmissionFailure.value?.question, conversationState.value.question)
+  ? questionSubmissionFailure.value?.issue : undefined);
+const materialMobileInteraction = computed(() => materialMobile && !!(conversationState.value.question || conversationState.value.approval));
+watch([() => conversationState.value.question, () => conversationState.value.approval], async () => {
+  if (!materialMobileInteraction.value) return;
+  await nextTick();
+  if (surface.signal.aborted || !materialMobileInteraction.value) return;
+  goDeck(0, 'auto');
+  if (dialogueBox.value) dialogueBox.value.scrollTop = 0;
+  if (mobileInteractionRegion.value) mobileInteractionRegion.value.scrollTop = 0;
+}, { flush: 'post' });
 let pluginRuntime: ReturnType<typeof createWorkbenchPluginRuntime> | undefined;
 async function refreshPluginUI() {
   if (!props.plugins.length || surface.signal.aborted) return;
@@ -527,14 +541,21 @@ async function resumeAfterSavedAnswer() {
   } finally { sending.value = false; waitingForReply.value = false; }
 }
 async function answerQuestion(answers: AskUserQuestionAnswerItem[]) {
-  if (interactionBusy.value) return;
+  const question = conversationState.value.question;
+  if (!question || interactionBusy.value) return;
   interactionBusy.value = true;
   let saved = false;
   try {
     await turnController.answer(answers); saved = true;
-    dialogueCtx.value = '正在继续回复';
+    if (surface.signal.aborted) return;
+    if (isSameOriginalQuestion(question, questionSubmissionFailure.value?.question)) questionSubmissionFailure.value = undefined;
+    if (!conversationState.value.question) dialogueCtx.value = '正在继续回复';
     await nextTick();
-  } catch { turnFeedback.value = {kind: 'connection-error', message: '回答没有保存，请重试。'}; }
+  } catch (error) {
+    if (!surface.signal.aborted && isSameOriginalQuestion(question, conversationState.value.question)) {
+      questionSubmissionFailure.value = { question, issue: getQuestionSubmissionIssue(error) };
+    }
+  }
   finally { interactionBusy.value = false; }
   // A transport can finish its first stream while awaiting a question. Observe
   // the same turn without holding the answer control busy through its next question.
@@ -935,7 +956,7 @@ onBeforeUnmount(() => {
     ref="mobileScreen"
     :tabindex="material3 ? -1 : undefined"
     class="proactive-companion"
-    :class="{ 'pc-viewport--short': viewportHeight !== undefined && (viewportHeight < 500 || ((materialDialogueNotice || modelConfigurationNotice) && viewportHeight <= 650)), 'pc-notice--compact': viewportHeight !== undefined && (materialDialogueNotice || modelConfigurationNotice) && viewportHeight <= 650, 'pc-has-feedback': materialDialogueNotice }"
+    :class="{ 'pc-viewport--short': viewportHeight !== undefined && (viewportHeight < 500 || ((materialDialogueNotice || modelConfigurationNotice || materialMobileInteraction) && viewportHeight <= 650)), 'pc-notice--compact': viewportHeight !== undefined && (materialDialogueNotice || modelConfigurationNotice || materialMobileInteraction) && viewportHeight <= 650, 'pc-has-feedback': materialDialogueNotice || materialMobileInteraction, 'pc-has-interaction': materialMobileInteraction }"
     :data-platform="surface.platform"
     :data-design-system="material3 ? 'material3' : undefined"
     :style="{ '--pc-viewport-height': viewportHeight === undefined ? undefined : `${viewportHeight}px`, '--pc-viewport-top': `${viewportTop}px` }"
@@ -962,25 +983,26 @@ onBeforeUnmount(() => {
     <div class="pc-deck-track" ref="deckTrack" @scroll.passive="onDeckScroll">
     <section class="pc-dialogue pc-deck-slide" aria-label="陪伴对话">
       <div class="pc-dialogue-name">{{ companionName }}</div>
-      <div ref="dialogueBox" class="pc-dialogue-box" :class="{ 'pc-dialogue-box--notice': !!modelConfigurationNotice || materialDialogueNotice, 'pc-dialogue-box--feedback': materialDialogueNotice }">
-        <p v-if="modelConfigurationNotice" class="pc-dialogue-text pc-model-configuration-notice" role="status">{{ modelConfigurationNotice }}</p>
-        <p v-else-if="waitingForReply && !materialDialogueNotice" class="pc-dialogue-waiting" role="status">
+      <div ref="dialogueBox" class="pc-dialogue-box" :class="{ 'pc-dialogue-box--notice': !!modelConfigurationNotice || materialDialogueNotice || materialMobileInteraction, 'pc-dialogue-box--feedback': materialDialogueNotice, 'pc-dialogue-box--interaction': materialMobileInteraction }">
+        <p v-if="modelConfigurationNotice && !materialMobileInteraction" class="pc-dialogue-text pc-model-configuration-notice" role="status">{{ modelConfigurationNotice }}</p>
+        <p v-else-if="waitingForReply && !materialDialogueNotice && !materialMobileInteraction" class="pc-dialogue-waiting" role="status">
           <component v-if="material3" :is="'md-linear-progress'" class="pc-material-progress" indeterminate aria-hidden="true" />
           <span v-else class="pc-waiting-dots" aria-hidden="true"><i /><i /><i /></span>
           <span>正在等待回复…</span>
         </p>
         <!-- Typing stays plain so the caret lands on real characters; a finished
              answer renders the same safe markdown the history panel uses. -->
-        <div v-else-if="!materialDialogueNotice && !dialogueTyping && dialogueText.trim()" class="pc-dialogue-text markdown-body" aria-live="polite" v-html="renderMarkdown(dialogueText)" />
-        <p v-else-if="!materialDialogueNotice" class="pc-dialogue-text" aria-live="polite">{{ dialogueText }}<span v-if="dialogueTyping" class="pc-caret" aria-hidden="true" /></p>
+        <div v-else-if="!materialDialogueNotice && !materialMobileInteraction && !dialogueTyping && dialogueText.trim()" class="pc-dialogue-text markdown-body" aria-live="polite" v-html="renderMarkdown(dialogueText)" />
+        <p v-else-if="!materialDialogueNotice && !materialMobileInteraction" class="pc-dialogue-text" aria-live="polite">{{ dialogueText }}<span v-if="dialogueTyping" class="pc-caret" aria-hidden="true" /></p>
         <component :is="buttonTag('md-text-button')"
-          v-if="modelConfigurationNotice"
+          v-if="modelConfigurationNotice && !materialMobileInteraction"
           type="button"
           class="pc-configure-model pc-feedback-action"
           @click="openModelConfiguration"
         ><Settings :slot="material3 ? 'icon' : undefined" :size="material3 ? 18 : 14" aria-hidden="true" />配置模型服务</component>
         <div v-if="material3" ref="dialogueFeedbackRegion" class="pc-dialogue-feedback" :class="{ 'pc-dialogue-feedback--active': materialDialogueNotice }" />
-        <div v-if="!materialDialogueNotice" class="pc-dialogue-foot">
+        <div v-if="materialMobile" ref="mobileInteractionRegion" class="pc-dialogue-interaction" :class="{ 'pc-dialogue-interaction--active': materialMobileInteraction }" />
+        <div v-if="!materialDialogueNotice && !materialMobileInteraction" class="pc-dialogue-foot">
           <span class="pc-dialogue-ctx">{{ modelConfigurationNotice ? '模型配置提示' : dialogueCtx }}</span>
           <span v-if="toolActivity" class="pc-dialogue-ctx pc-tool-activity" role="status">{{ toolActivity }}</span>
           <span v-if="copyFeedback && !modelConfigurationNotice" class="pc-dialogue-ctx pc-copy-feedback" role="status">{{ copyFeedback }}</span>
@@ -1075,14 +1097,18 @@ onBeforeUnmount(() => {
         :aria-label="'切换到' + label" @click="goDeck(index)" />
     </div>
 
+    <Teleport :to="mobileInteractionRegion" :disabled="!materialMobile || !mobileInteractionRegion">
     <section v-if="conversationState.question" class="pc-interaction" aria-label="回答问题">
-      <UserQuestionComposer :question-data="conversationState.question" :submitting="interactionBusy" @submit="answerQuestion" />
+      <UserQuestionComposer :question-data="conversationState.question" :submitting="interactionBusy" :submission-issue="questionSubmissionIssue" @submit="answerQuestion" />
     </section>
     <section v-if="conversationState.approval" class="pc-interaction" aria-label="工具授权">
-      <p>请求执行 {{ conversationState.approval.toolName }}，需要你的确认。</p>
-      <component :is="buttonTag('md-filled-button')" type="button" :disabled="interactionBusy || sending" @click="decideApproval('granted')">批准</component>
-      <component :is="buttonTag('md-text-button')" type="button" :disabled="interactionBusy || sending" @click="decideApproval('denied')">拒绝</component>
+      <div class="pc-approval-copy"><p>请求执行 {{ conversationState.approval.toolName }}，需要你的确认。</p></div>
+      <div class="pc-approval-actions">
+        <component :is="buttonTag('md-filled-button')" type="button" :disabled="interactionBusy || sending" @click="decideApproval('granted')">批准</component>
+        <component :is="buttonTag('md-text-button')" type="button" :disabled="interactionBusy || sending" @click="decideApproval('denied')">拒绝</component>
+      </div>
     </section>
+    </Teleport>
 
     <Teleport :to="mobileHomeActionsRegion" :disabled="!material3 || !mobileHomeActionsRegion">
     <nav class="pc-home-nav" aria-label="首页入口">
@@ -1781,13 +1807,45 @@ onBeforeUnmount(() => {
 .proactive-companion[data-design-system="material3"].pc-notice--compact .pc-content { display: flex; flex-direction: column; }
 .proactive-companion[data-design-system="material3"].pc-notice--compact .pc-deck-track { flex: 0 0 min(200px, 100%); height: auto; min-height: 0; margin-block-start: 0; }
 .pc-notice--compact .pc-deck-dots,
-.pc-notice--compact .pc-home-nav,
-.pc-notice--compact .pc-interaction { flex: 0 0 auto; }
+.pc-notice--compact .pc-home-nav { flex: 0 0 auto; }
 .pc-notice--compact .pc-dialogue > .pc-dialogue-name,
 .pc-notice--compact .pc-dialogue-box--notice .pc-dialogue-foot { display: none; }
 .proactive-companion[data-design-system="material3"].pc-notice--compact .pc-dialogue-box { padding: 12px 16px; }
 .proactive-companion[data-design-system="material3"] .pc-deck-box--tools { overflow-y: auto; overscroll-behavior-y: contain; justify-content: flex-start; }
 .proactive-companion[data-design-system="material3"] .pc-deck-tools { margin-top: 12px; flex-shrink: 0; }
+
+/* Keep one glass bubble and one mounted question composer across deck/IME changes. */
+.pc-dialogue-interaction { display: none; }
+.proactive-companion[data-design-system="material3"][data-platform="mobile"] .pc-deck-slide > .pc-dialogue-box--interaction {
+  display: flex; flex-direction: column; gap: 8px; overflow-y: auto;
+}
+.proactive-companion[data-design-system="material3"][data-platform="mobile"] .pc-dialogue-interaction--active {
+  display: flex; flex-direction: column; flex: 1 0 128px; min-height: 0; gap: 12px; overflow-y: auto;
+}
+.proactive-companion[data-design-system="material3"][data-platform="mobile"] .pc-dialogue-box--interaction .pc-dialogue-feedback--active { flex: 0 0 auto; }
+.proactive-companion[data-design-system="material3"][data-platform="mobile"] .pc-interaction {
+  display: flex; flex-direction: column; flex: 1 0 128px; min-width: 0; min-height: 0;
+  width: 100%; max-width: none; margin: 0; padding: 0; border: 0; border-radius: 0;
+  background: transparent; color: var(--md-sys-color-on-surface); overflow: hidden;
+}
+.proactive-companion[data-design-system="material3"][data-platform="mobile"] .pc-interaction :deep(.user-question-card) {
+  display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0;
+  margin: 0; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none;
+}
+.proactive-companion[data-design-system="material3"][data-platform="mobile"] .pc-interaction :deep(.uq-header) { flex: 0 0 auto; margin-bottom: 8px; }
+.proactive-companion[data-design-system="material3"][data-platform="mobile"] .pc-interaction :deep(.uq-body) { flex: 1 1 auto; min-height: 24px; overflow-y: auto; overscroll-behavior-y: contain; }
+.proactive-companion[data-design-system="material3"][data-platform="mobile"] .pc-interaction :deep(.uq-item) { flex: 0 0 auto; }
+.proactive-companion[data-design-system="material3"][data-platform="mobile"] .pc-interaction :deep(.uq-detail) { padding: 0; background: transparent; }
+.proactive-companion[data-design-system="material3"][data-platform="mobile"] .pc-interaction :deep(.uq-actions) { flex: 0 0 auto; min-height: 48px; margin-top: 8px; }
+.proactive-companion[data-design-system="material3"][data-platform="mobile"] .pc-interaction :deep(.uq-submit-btn) { min-height: 48px; --md-filled-button-container-height: 48px; }
+.proactive-companion[data-design-system="material3"][data-platform="mobile"] .pc-approval-copy { flex: 1 1 auto; min-height: 24px; overflow-y: auto; overscroll-behavior-y: contain; }
+.proactive-companion[data-design-system="material3"][data-platform="mobile"] .pc-approval-copy p { margin: 0; overflow-wrap: anywhere; font-size: 16px; line-height: 24px; }
+.proactive-companion[data-design-system="material3"][data-platform="mobile"] .pc-approval-actions { display: flex; flex: 0 0 auto; gap: 8px; min-height: 48px; margin-top: 8px; }
+.proactive-companion[data-design-system="material3"][data-platform="mobile"] .pc-approval-actions > :is(md-filled-button, md-text-button) { min-height: 48px; --md-filled-button-container-height: 48px; --md-text-button-container-height: 48px; }
+.proactive-companion[data-design-system="material3"][data-platform="mobile"].pc-notice--compact :is(.pc-dialogue-interaction--active, .pc-interaction) { flex-basis: 80px; }
+.proactive-companion[data-design-system="material3"][data-platform="mobile"].pc-notice--compact .pc-interaction :deep(.uq-header) { display: none; }
+.proactive-companion[data-design-system="material3"][data-platform="mobile"].pc-notice--compact.pc-has-interaction > .pc-header { min-height: calc(48px + env(safe-area-inset-top, 0px)); }
+.proactive-companion[data-design-system="material3"][data-platform="mobile"].pc-notice--compact .pc-dialogue-box--interaction { padding-block: 8px; }
 
 /* Tablets and landscape keep a dedicated character column. The same deck and
  * draft remain mounted while resizing, so switching layouts keeps their state. */
@@ -1795,13 +1853,13 @@ onBeforeUnmount(() => {
   .proactive-companion[data-design-system="material3"][data-platform="mobile"] {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
-    grid-template-rows: auto auto minmax(0, 1fr) auto auto auto;
+    grid-template-rows: auto auto minmax(0, 1fr) auto auto;
   }
   .proactive-companion[data-design-system="material3"] > .pc-header { grid-column: 1 / -1; grid-row: 1; }
   .proactive-companion[data-design-system="material3"] > .pc-current-session { grid-column: 2; grid-row: 2; margin: 0 24px 12px; }
   .proactive-companion[data-design-system="material3"][data-platform="mobile"] > .pc-content { display: contents; }
   .proactive-companion[data-design-system="material3"][data-platform="mobile"] .pc-stage {
-    display: grid; grid-column: 1; grid-row: 2 / 7;
+    display: grid; grid-column: 1; grid-row: 2 / 6;
     align-self: stretch; align-items: center; position: relative;
     width: 100%; height: 100%; min-height: 0; padding: 0 12px;
     overflow: hidden;
@@ -1833,8 +1891,7 @@ onBeforeUnmount(() => {
   .proactive-companion[data-design-system="material3"][data-platform="mobile"] .pc-deck-dots {
     display: flex; grid-column: 2; grid-row: 4; justify-content: center; gap: 2px; margin-top: 8px;
   }
-  .proactive-companion[data-design-system="material3"] .pc-interaction { grid-column: 2; grid-row: 5; max-height: 35dvh; overflow-y: auto; }
-  .proactive-companion[data-design-system="material3"] > .pc-whisper { grid-column: 2; grid-row: 6; padding-inline: 24px; }
+  .proactive-companion[data-design-system="material3"] > .pc-whisper { grid-column: 2; grid-row: 5; padding-inline: 24px; }
   .proactive-companion[data-design-system="material3"] .pc-whisper-input { max-width: none; }
   .proactive-companion[data-design-system="material3"].pc-notice--compact .pc-deck-track { flex-basis: auto; height: 100%; }
   .proactive-companion[data-design-system="material3"].pc-notice--compact > .pc-current-session { display: none; }

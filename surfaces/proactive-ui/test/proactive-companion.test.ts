@@ -562,6 +562,164 @@ it('keeps a new question visible when an earlier multi-question answer finishes'
   expect(wrapper.get('.pc-interaction').text()).toContain('新的确认');
 });
 
+const interactionViewports = [{ width: 390, height: 844 }, { width: 1069, height: 620 }, { width: 1052, height: 300 }];
+it.each(interactionViewports)('keeps the mobile question in its existing bubble and preserves answers at $width×$height', async viewport => {
+  const visualViewport = Object.assign(new EventTarget(), { ...viewport, scale: 1, offsetTop: 0, offsetLeft: 0 });
+  vi.stubGlobal('visualViewport', visualViewport);
+  const pending = pendingStream();
+  let saved!: () => void;
+  const submitAnswers = vi.fn((..._args: unknown[]) => new Promise<void>(resolve => { saved = resolve; }));
+  configureAervoxClient({ transport: { request: request as never, streamTurn, observeTurn, submitQuestionAnswers: submitAnswers, decideToolApproval: vi.fn() } });
+  const question = { turnId: 'turn_layout_question', attemptId: 'attempt', invocationId: 'attempt:1:1', identityStatus: 'available' as const,
+    step: 1, questions: [{ id: 'topic', question: '选主题', options: [{ label: 'A' }, { label: 'B' }] }] };
+  const wrapper = await mountSurface('mobile', true);
+  await sendFromInput(wrapper); await pending.options.onAccepted?.(question.turnId);
+  await wrapper.get('.pc-whisper-input textarea').setValue('稍后再发的草稿');
+  await wrapper.get('.pc-deck-dot[aria-label="切换到工具"]').trigger('click');
+  pending.callbacks.onUserQuestion?.(question); pending.complete(); await flushPromises();
+  expect(wrapper.get('.pc-deck-dot[aria-label="切换到对话"]').attributes('aria-selected')).toBe('true');
+  expect(wrapper.find('.pc-content > .pc-interaction').exists()).toBe(false);
+  expect(wrapper.get('.pc-dialogue-box .pc-interaction').attributes('aria-label')).toBe('回答问题');
+  expect(wrapper.get('.pc-dialogue-box').classes()).toContain('pc-dialogue-box--interaction');
+  expect(wrapper.get('.proactive-companion').classes().includes('pc-notice--compact')).toBe(viewport.height <= 650);
+  const composer = wrapper.getComponent({ name: 'UserQuestionComposer' }).vm.$;
+  await wrapper.get('.uq-option-btn').trigger('click');
+  await wrapper.get('.uq-custom-input input').setValue('保留补充说明');
+  await wrapper.get('.pc-deck-dot[aria-label="切换到工具"]').trigger('click');
+  visualViewport.height = 300; visualViewport.dispatchEvent(new Event('resize')); await flushPromises();
+  await wrapper.get('.pc-deck-dot[aria-label="切换到对话"]').trigger('click');
+  expect(wrapper.getComponent({ name: 'UserQuestionComposer' }).vm.$).toBe(composer);
+  expect(wrapper.get('.uq-option-btn').attributes('aria-pressed')).toBe('true');
+  expect((wrapper.get('.uq-custom-input input').element as HTMLInputElement).value).toBe('保留补充说明');
+  await wrapper.get('.uq-submit-btn').trigger('click');
+  const next = { ...question, invocationId: 'attempt:2:1', step: 2, questions: [{ id: 'next', question: '新的确认' }] };
+  pending.callbacks.onUserQuestion?.(next); saved(); await flushPromises();
+  expect(submitAnswers.mock.calls[0]?.slice(0, 2)).toEqual([question.turnId, [{ id: 'topic', selected: ['A'], custom: '保留补充说明' }]]);
+  expect(submitAnswers.mock.calls[0]?.[2]).toBeInstanceOf(AbortSignal);
+  expect(wrapper.get('.pc-dialogue-box .pc-interaction').text()).toContain('新的确认');
+  expect(wrapper.getComponent({ name: 'UserQuestionComposer' }).vm.$).toBe(composer);
+  expect((wrapper.get('.pc-whisper-input textarea').element as HTMLTextAreaElement).value).toBe('稍后再发的草稿');
+});
+
+it.each(interactionViewports)('returns mobile approval to the glass dialogue at $width×$height', async viewport => {
+  vi.stubGlobal('visualViewport', Object.assign(new EventTarget(), { ...viewport, scale: 1, offsetTop: 0, offsetLeft: 0 }));
+  const pending = pendingStream();
+  const wrapper = await mountSurface('mobile', true);
+  await sendFromInput(wrapper); await pending.options.onAccepted?.('turn_layout_approval');
+  await wrapper.get('.pc-whisper-input textarea').setValue('授权时保留的草稿');
+  await wrapper.get('.pc-deck-dot[aria-label="切换到工具"]').trigger('click');
+  pending.callbacks.onToolApproval?.({ turnId: 'turn_layout_approval', approvalId: 'approval', toolName: 'device_tap', argumentsHash: 'hash' });
+  pending.complete(); await flushPromises();
+  expect(wrapper.get('.pc-deck-dot[aria-label="切换到对话"]').attributes('aria-selected')).toBe('true');
+  expect(wrapper.find('.pc-content > .pc-interaction').exists()).toBe(false);
+  const approval = wrapper.get('.pc-dialogue-box .pc-interaction[aria-label="工具授权"]');
+  expect(approval.get('.pc-approval-copy').text()).toContain('device_tap');
+  expect(approval.get('.pc-approval-actions').text()).toContain('批准');
+  expect(approval.get('.pc-approval-actions').text()).toContain('拒绝');
+  expect((wrapper.get('.pc-whisper-input textarea').element as HTMLTextAreaElement).value).toBe('授权时保留的草稿');
+});
+
+it.each(['question', 'approval'] as const)('keeps the existing non-Material desktop $0 presentation', async interaction => {
+  const pending = pendingStream();
+  const wrapper = await mountSurface('desktop');
+  await sendFromInput(wrapper); await pending.options.onAccepted?.('turn_desktop_interaction');
+  const question = { turnId: 'turn_desktop_interaction', attemptId: 'attempt', invocationId: 'attempt:1:1', identityStatus: 'available' as const,
+    step: 1, questions: [{ id: 'q', question: '桌面确认' }] };
+  if (interaction === 'question') pending.callbacks.onUserQuestion?.(question);
+  else pending.callbacks.onToolApproval?.({ turnId: question.turnId, approvalId: 'approval', toolName: 'device_tap', argumentsHash: 'hash' });
+  pending.complete(); await flushPromises();
+  expect(wrapper.find('.pc-content > .pc-interaction').exists()).toBe(true);
+  expect(wrapper.find('.pc-dialogue-box .pc-interaction').exists()).toBe(false);
+  expect(wrapper.find('.pc-dialogue-interaction').exists()).toBe(false);
+});
+
+async function questionSubmissionSurface(submitAnswers: ReturnType<typeof vi.fn>) {
+  const pending = pendingStream();
+  configureAervoxClient({ transport: { request: request as never, streamTurn, observeTurn, submitQuestionAnswers: submitAnswers, decideToolApproval: vi.fn() } });
+  const question = { turnId: 'turn_submission_issue', attemptId: 'attempt', invocationId: 'attempt:1:1', identityStatus: 'available' as const,
+    step: 1, questions: [{ id: 'topic', question: '选主题', options: [{ label: 'A' }] }] };
+  const wrapper = await mountSurface('mobile', true);
+  await sendFromInput(wrapper); await pending.options.onAccepted?.(question.turnId);
+  pending.callbacks.onUserQuestion?.(question); pending.complete(); await flushPromises();
+  await wrapper.get('.uq-option-btn').trigger('click');
+  await wrapper.get('.uq-custom-input input').setValue('保留补充说明');
+  await wrapper.get('.pc-whisper-input textarea').setValue('保留主草稿');
+  return { wrapper, pending, question };
+}
+
+it.each([
+  { code: 'QUESTION_EXPIRED', message: '问题已结束，无法继续作答。', disabled: true },
+  { code: 'QUESTION_IDENTITY_UNAVAILABLE', message: '旧问题无法继续作答。', disabled: true },
+  { code: undefined, message: '暂时无法确认提交结果，请再试一次。', disabled: false },
+])('shows one scoped mobile submission notice for $code', async ({ code, message, disabled }) => {
+  const submitAnswers = vi.fn().mockRejectedValue(code ? new AervoxHttpError(409, 'native', { code, message: 'private transport details' }) : new Error('private transport details'));
+  const { wrapper } = await questionSubmissionSurface(submitAnswers);
+  await wrapper.get('.uq-submit-btn').trigger('click'); await flushPromises();
+  expect(wrapper.findAll('.pc-dialogue-box .uq-feedback')).toHaveLength(1);
+  expect(wrapper.get('.uq-feedback').text()).toBe(message);
+  expect(wrapper.find('.pc-feedback').exists()).toBe(false);
+  expect(wrapper.find('.pc-content > .pc-interaction').exists()).toBe(false);
+  expect(wrapper.text()).not.toContain('private transport details');
+  expect(![undefined, 'false'].includes(wrapper.get('.uq-submit-btn').attributes('disabled'))).toBe(disabled);
+  expect(wrapper.get('.uq-custom-input input').attributes('disabled') !== undefined).toBe(disabled);
+  expect((wrapper.get('.uq-custom-input input').element as HTMLInputElement).value).toBe('保留补充说明');
+  expect((wrapper.get('.pc-whisper-input textarea').element as HTMLTextAreaElement).value).toBe('保留主草稿');
+});
+
+it('preserves a failed original question replay while isolating the next question notice', async () => {
+  const submitAnswers = vi.fn().mockRejectedValueOnce(new Error('private retry details')).mockRejectedValueOnce(new AervoxHttpError(409, 'native', { code: 'QUESTION_CLOSED' }));
+  const { wrapper, pending, question } = await questionSubmissionSurface(submitAnswers);
+  const composer = wrapper.getComponent({ name: 'UserQuestionComposer' }).vm.$;
+  await wrapper.get('.uq-submit-btn').trigger('click'); await flushPromises();
+  pending.callbacks.onUserQuestion?.({ ...question }); await flushPromises();
+  expect(wrapper.get('.uq-feedback').text()).toBe('暂时无法确认提交结果，请再试一次。');
+  expect((wrapper.get('.uq-custom-input input').element as HTMLInputElement).value).toBe('保留补充说明');
+  const next = { ...question, invocationId: 'attempt:2:1', step: 2, questions: [{ id: 'next', question: '新的问题' }] };
+  pending.callbacks.onUserQuestion?.(next); await flushPromises();
+  expect(wrapper.find('.uq-feedback').exists()).toBe(false);
+  expect(wrapper.getComponent({ name: 'UserQuestionComposer' }).vm.$).toBe(composer);
+  await wrapper.get('.uq-custom-input input').setValue('新的回答');
+  await wrapper.get('.uq-submit-btn').trigger('click'); await flushPromises();
+  expect(wrapper.get('.uq-feedback').text()).toBe('问题已结束，无法继续作答。');
+  expect(wrapper.get('.pc-dialogue-box .pc-interaction').text()).toContain('新的问题');
+});
+
+it('does not attach a late original save failure to a newer mobile question', async () => {
+  let rejectSave!: (error: Error) => void;
+  const submitAnswers = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectSave = reject; }));
+  const { wrapper, pending, question } = await questionSubmissionSurface(submitAnswers);
+  await wrapper.get('.uq-submit-btn').trigger('click');
+  const next = { ...question, invocationId: 'attempt:2:1', step: 2, questions: [{ id: 'next', question: '新的问题' }] };
+  pending.callbacks.onUserQuestion?.(next); rejectSave(new AervoxHttpError(409, 'native', { code: 'QUESTION_EXPIRED' })); await flushPromises();
+  expect(wrapper.find('.uq-feedback').exists()).toBe(false);
+  expect(wrapper.find('.pc-feedback').exists()).toBe(false);
+  expect(wrapper.get('.pc-interaction').text()).toContain('新的问题');
+  expect(wrapper.get('.uq-custom-input input').attributes('disabled')).toBeUndefined();
+});
+
+it('keeps a newer unavailable question notice when the original retry succeeds', async () => {
+  let save!: () => void;
+  const submitAnswers = vi.fn().mockRejectedValueOnce(new Error('offline')).mockImplementationOnce(() => new Promise<void>(resolve => { save = resolve; }));
+  const { wrapper, pending, question } = await questionSubmissionSurface(submitAnswers);
+  await wrapper.get('.uq-submit-btn').trigger('click'); await flushPromises();
+  await wrapper.get('.uq-submit-btn').trigger('click');
+  const next = { ...question, invocationId: 'attempt:2:1', step: 2, identityStatus: 'identity_unavailable' as const, questions: [{ id: 'next', question: '新的问题' }] };
+  pending.callbacks.onUserQuestion?.(next); save(); await flushPromises();
+  expect(wrapper.get('.uq-feedback').text()).toBe('旧问题无法继续作答。');
+  expect(wrapper.get('.uq-submit-btn').attributes('disabled')).toBeDefined();
+  expect(wrapper.get('.pc-interaction').text()).toContain('新的问题');
+});
+
+it('keeps receive-recovery feedback separate after the mobile answer was saved', async () => {
+  observeTurn.mockRejectedValueOnce(new Error('private observer details'));
+  const { wrapper } = await questionSubmissionSurface(vi.fn().mockResolvedValue(undefined));
+  await wrapper.get('.uq-submit-btn').trigger('click'); await flushPromises();
+  expect(wrapper.find('.uq-feedback').exists()).toBe(false);
+  expect(wrapper.get('.pc-feedback').text()).toContain('回答已保存，接收回复失败。可以恢复接收。');
+  expect(wrapper.get('.pc-resume').text()).toBe('恢复接收回复');
+  expect(wrapper.text()).not.toContain('private observer details');
+});
+
 it('does not replace a recoverable reply when reselecting the current session', async () => {
   streamTurn.mockImplementationOnce(async (_s,_c,cb,options)=>{
     await options.onAccepted('turn');cb.onDelta('原始正文。');
