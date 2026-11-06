@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 env:
-  # Validate session fixes against the reviewed mobile host and final plugin baseline.
-  HOST_COMMIT: ${{ inputs.host_commit || 'c420bda34ab1b3be4ca2281b6a676d262684a26d' }}
+  # Validate companion home against its paired, public host integration commit.
+  HOST_COMMIT: ${{ inputs.host_commit || '0c93300075847e196ef415cb9bb35e888e7caf06' }}
 
 jobs:
   integration:
