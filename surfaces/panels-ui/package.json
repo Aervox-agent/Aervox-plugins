@@ -6,7 +6,10 @@
   "type": "module",
   "description": "First-party settings panels (model, local models, persona, voice, plugin management) contributed to the workbench via registry slots.",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./onboarding": "./src/onboarding/index.ts",
+    "./onboarding/state": "./src/onboarding/onboarding-state.ts",
+    "./onboarding/model": "./src/onboarding/onboarding-model.ts"
   },
   "scripts": {
     "build": "vue-tsc --noEmit",
