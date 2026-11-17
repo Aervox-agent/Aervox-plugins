@@ -31,6 +31,7 @@ const props = withDefaults(defineProps<{
   settingsPanels?: readonly { category: string; component: Component }[];
   plugins?: BuiltinUIPlugin[];
   nativeRuntime?: boolean;
+  interactionSuspended?: boolean;
   learningPanel?: Component;
   draftStorage?: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
 }>(), { settingsPanels: () => [], plugins: () => [] });
@@ -66,6 +67,15 @@ const sessionsOpen = ref(false);
 const historyOpen = ref(false);
 const historySessionId = ref('');
 const historyTitle = ref('');
+watch(() => props.interactionSuspended, suspended => {
+  if (!suspended) return;
+  settingsOpen.value = false;
+  todayOpen.value = false;
+  learningOpen.value = false;
+  diaryOpen.value = false;
+  sessionsOpen.value = false;
+  historyOpen.value = false;
+}, { flush: 'sync' });
 const sessionsReady = ref(false);
 const sessionChanging = ref(false);
 const preparingSession = ref(false);
@@ -1005,6 +1015,7 @@ onBeforeUnmount(() => {
     ref="mobileScreen"
     :tabindex="material3 ? -1 : undefined"
     class="proactive-companion"
+    :inert="interactionSuspended"
     :class="{ 'pc-viewport--short': viewportHeight !== undefined && (viewportHeight < 500 || ((materialDialogueNotice || modelConfigurationNotice || materialMobileInteraction) && viewportHeight <= 650)), 'pc-notice--compact': viewportHeight !== undefined && (materialDialogueNotice || modelConfigurationNotice || materialMobileInteraction) && viewportHeight <= 650, 'pc-has-feedback': materialDialogueNotice || materialMobileInteraction, 'pc-has-interaction': materialMobileInteraction }"
     :data-platform="surface.platform"
     :data-design-system="material3 ? 'material3' : undefined"
