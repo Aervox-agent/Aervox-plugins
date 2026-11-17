@@ -52,6 +52,35 @@ it('compact surface mounts the same workbench as a single-column variant without
   expect(wrapper.find('.standard-conversation').exists()).toBe(true);
 });
 
+it.each(['web', 'desktop'] as const)('suspends global shortcuts and body overlays while retaining the %s surface', async platform => {
+  const request = vi.fn(async <T>(_method: string, path: string) => ({ items: path === '/v1/plugins' ? [fixturePlugin] : [] }) as T);
+  configureAervoxClient({ transport: { request, streamTurn: vi.fn(), submitQuestionAnswers: vi.fn(), decideToolApproval: vi.fn() } });
+  const wrapper = mount(UISurfaceHost, { attachTo: document.body, props: {
+    plugin: definition, surface: 'main', platform, viewProps: { showCompanion: false },
+  } });
+  await vi.waitFor(() => expect(wrapper.find('textarea').exists()).toBe(true));
+  const root = wrapper.get('.aervox-workbench').element;
+  const input = wrapper.get('textarea');
+  await input.setValue('保留原草稿');
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true }));
+  await vi.waitFor(() => expect(document.querySelector('input[placeholder^="搜索功能、项目或会话"]')).not.toBeNull());
+  await wrapper.setProps({ viewProps: { showCompanion: false, interactionSuspended: true } });
+  await flushPromises();
+  expect(document.querySelector('input[placeholder^="搜索功能、项目或会话"]')).toBeNull();
+  for (const modifier of [{ ctrlKey: true }, { metaKey: true }]) {
+    for (const key of ['k', 'n', '/']) document.dispatchEvent(new KeyboardEvent('keydown', { key, ...modifier, bubbles: true }));
+  }
+  await flushPromises();
+  expect(document.querySelector('input[placeholder^="搜索功能、项目或会话"]')).toBeNull();
+  expect(request.mock.calls.some(([method, path]) => method === 'POST' && path.split('?')[0] === '/v1/sessions')).toBe(false);
+  await wrapper.setProps({ viewProps: { showCompanion: false, interactionSuspended: false } });
+  expect(wrapper.get('.aervox-workbench').element).toBe(root);
+  expect(wrapper.get('textarea').element).toBe(input.element);
+  expect((input.element as HTMLTextAreaElement).value).toBe('保留原草稿');
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true }));
+  await vi.waitFor(() => expect(document.querySelector('input[placeholder^="搜索功能、项目或会话"]')).not.toBeNull());
+});
+
 it('keeps extension registries and cleanup separate across mounted workbenches', async () => {
   await definition.load();
   const registries: UIRegistry[] = [];

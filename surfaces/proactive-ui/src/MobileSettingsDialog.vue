@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, watch, type Component } from 'vue';
-import { AervoxDialog, AervoxDialogHeader } from '@aervox/ui/primitives';
-import { useMaterial3 } from '@aervox/ui/material3';
+import { computed, nextTick, ref, watch, type Component } from 'vue';
+import { AervoxButton, AervoxDialog, AervoxDialogHeader } from '@aervox/ui/primitives';
+import { useMaterial3, useMobileBackNavigation } from '@aervox/ui/material3';
 
 const props = defineProps<{
   modelValue: boolean;
@@ -14,6 +14,7 @@ const categories = [
   { id: 'voice', label: '语音' },
 ];
 const material3 = useMaterial3();
+const backNavigation = useMobileBackNavigation();
 const selected = ref('model');
 const panelScroll = ref<HTMLElement>();
 watch(selected, () => { if (panelScroll.value) panelScroll.value.scrollTop = 0; }, { flush: 'post' });
@@ -31,6 +32,12 @@ function selectMaterialTab(event: Event) {
 }
 function selectCategory(category: string) {
   if (available.value.some(item => item.id === category)) selected.value = category;
+}
+async function configureCompanion() {
+  emit('update:modelValue', false);
+  await nextTick();
+  try { await backNavigation?.whenSettled(); } catch { return; }
+  window.dispatchEvent(new Event('aervox:configure-companion'));
 }
 defineExpose({ selectCategory });
 </script>
@@ -79,6 +86,7 @@ defineExpose({ selectCategory });
         @click="selected = item.id"
       >{{ item.label }}</button>
     </nav>
+    <div class="mobile-first-run-setup"><span>名字、称呼与首次设置</span><AervoxButton @click="configureCompanion">打开引导</AervoxButton></div>
     <div ref="panelScroll" :id="'mobile-settings-panel-' + selected" :role="material3 ? 'tabpanel' : undefined" :aria-labelledby="material3 ? 'mobile-settings-tab-' + selected : undefined" class="mobile-settings-panel">
       <KeepAlive>
         <component :is="activePanel" v-if="activePanel" :key="selected" />
@@ -102,6 +110,7 @@ defineExpose({ selectCategory });
 }
 .mobile-settings-material-tabs md-primary-tab { min-height: 48px; }
 .mobile-settings-panel { min-width: 0; }
+.mobile-first-run-setup { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 20px; font-size: 14px; }
 .mobile-settings-chrome { width: 100%; min-width: 0; }
 .mobile-settings-chrome :deep(.aervox-dialog-header) { min-height: 64px; padding-inline: 16px 8px; box-sizing: border-box; }
 </style>

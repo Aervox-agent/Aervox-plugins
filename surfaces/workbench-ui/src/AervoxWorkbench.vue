@@ -67,6 +67,8 @@ const props = withDefaults(
     platform?: Platform;
     surfaceNavigation?: SurfaceNavigation;
     showCompanion?: boolean;
+    /** Hide transient overlays and pause global input while the host shows setup. */
+    interactionSuspended?: boolean;
     /** ADR-027：陪伴角色名（默认「小隅」）；「思隅」是空间名，不再是角色名 */
     companionName?: string;
     /**
@@ -280,6 +282,19 @@ const projects = useAervoxProjects();
 const commandPaletteOpen = ref(false);
 const projectManagerOpen = ref(false);
 const importSessionOpen = ref(false);
+
+watch(() => props.interactionSuspended, suspended => {
+  if (!suspended) return;
+  commandPaletteOpen.value = false;
+  projectManagerOpen.value = false;
+  importSessionOpen.value = false;
+  layout.toolsOpen.value = false;
+  layout.historyOpen.value = false;
+  layout.taskCenterOpen.value = false;
+  layout.settingsOpen.value = false;
+  conversation.fullAccessDialogOpen.value = false;
+  proactive.proactiveDialogOpen.value = false;
+}, { flush: 'sync' });
 
 // 抽屉与弹窗组件懒挂载守卫（首次打开时才挂载对应异步组件实例，消除首屏初始加载开销）
 const toolsMounted = ref(false);
@@ -579,7 +594,7 @@ let removeProactiveStatusListener: (() => void) | undefined;
 let materialThemeObserver: MutationObserver | undefined;
 
 onMounted(() => {
-  window.addEventListener('aervox:open-settings', layout.openSettings);
+  window.addEventListener('aervox:open-settings', handleOpenSettings);
 
   try {
     const savedSettings = JSON.parse(localStorage.getItem('aervox-settings') ?? '{}') as Partial<{
@@ -686,6 +701,7 @@ onMounted(() => {
 });
 
 function handleGlobalKeydown(e: KeyboardEvent) {
+  if (props.interactionSuspended) return;
   const isCmdOrCtrl = e.metaKey || e.ctrlKey;
   if (isCmdOrCtrl && (e.key === 'n' || e.key === 'N')) {
     e.preventDefault();
@@ -699,6 +715,10 @@ function handleGlobalKeydown(e: KeyboardEvent) {
   }
 }
 
+function handleOpenSettings() {
+  if (!props.interactionSuspended) layout.openSettings();
+}
+
 onUnmounted(() => {
   turnController.dispose();
   pluginRuntime?.destroy();
@@ -707,7 +727,7 @@ onUnmounted(() => {
   document.removeEventListener('click', layout.handleMenuDocumentClick);
   document.removeEventListener('keydown', layout.handleHistoryEscape);
   document.removeEventListener('keydown', handleGlobalKeydown);
-  window.removeEventListener('aervox:open-settings', layout.openSettings);
+  window.removeEventListener('aervox:open-settings', handleOpenSettings);
   removeProactiveStatusListener?.();
   materialThemeObserver?.disconnect();
   composer.clearPendingAttachments();
@@ -717,6 +737,7 @@ onUnmounted(() => {
 <template>
   <section
     class="aervox-workbench"
+    :inert="interactionSuspended"
     :class="[
       `is-${platform}`,
       `mode-${layout.workbenchMode.value}`,
