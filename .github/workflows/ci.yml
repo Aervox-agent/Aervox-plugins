@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 env:
-  # Validate unified native UI and complete original-question consumers against the paired host.
-  HOST_COMMIT: ${{ inputs.host_commit || 'f242458fc0ba99751b1cd8947ba903237032d05d' }}
+  # This public preparation includes complete learning APIs and durable questions; bind the exact collection below.
+  HOST_COMMIT: ${{ inputs.host_commit || 'b2465fd3746ac22d143aa0343d3c24643f847a83' }}
 
 jobs:
   integration:
