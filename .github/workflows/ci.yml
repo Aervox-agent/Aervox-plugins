@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 env:
-  # This public integration includes learning receipts, practice contracts and reviewed safety fixes.
-  HOST_COMMIT: ${{ inputs.host_commit || '803cdeefdf67a8e52d59de6602e0f79a30550acc' }}
+  # Validate native Android UI and the integrated learning/safety contracts against this public host.
+  HOST_COMMIT: ${{ inputs.host_commit || 'fa6d07bcfdcc681a2505c5d972a0218dda317244' }}
 
 jobs:
   integration:
