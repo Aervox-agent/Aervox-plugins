@@ -1,4 +1,5 @@
 import { campusInstantSchema, campusStateSchema, type CampusState, type CampusPlan, type CampusTask } from "../contracts/index.js";
+import { campusPlanningCandidates, campusOverlappingOccurrences } from './recurrence.js';
 
 const compareId = (a: string, b: string) => a < b ? -1 : a > b ? 1 : 0;
 
@@ -26,12 +27,13 @@ export function calculateCampusPlan(input: CampusState, at: string | Date = new 
   const state = campusStateSchema.parse(input);
   const instant = campusInstantSchema.parse(at instanceof Date ? at.toISOString() : at);
   const now = Date.parse(instant);
-  const candidates = state.events.filter(event => event.status === "scheduled" && Date.parse(event.endAt) > now)
+  const candidates = campusPlanningCandidates(state, now).filter(event => event.status === "scheduled" && Date.parse(event.endAt) > now)
     .sort((a, b) => Date.parse(a.startAt) - Date.parse(b.startAt) || compareId(a.id, b.id));
   const nextEvent = candidates[0] ?? null;
   const origin = state.places.find(place => place.id === state.settings.originId) ?? null;
   const destination = state.places.find(place => place.id === nextEvent?.placeId) ?? null;
-  const conflicts = nextEvent ? candidates.filter(event => event.id !== nextEvent.id
+  const nearby = nextEvent ? [...state.events, ...campusOverlappingOccurrences(state, nextEvent.startAt, nextEvent.endAt)] : [];
+  const conflicts = nextEvent ? nearby.filter(event => event.status === "scheduled" && event.id !== nextEvent.id
     && Date.parse(event.startAt) < Date.parse(nextEvent.endAt) && Date.parse(event.endAt) > Date.parse(nextEvent.startAt)) : [];
   const base: CampusPlan = { at: instant, timezone: state.settings.timezone, nextEvent, origin, destination, route: null,
     routeStatus: "not_needed", departureAt: null, freeMinutes: 0, isLate: false,

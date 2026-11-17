@@ -44,6 +44,24 @@ describe("campus host-backed HTTP", () => {
     expect(h.configuration.save).toHaveBeenCalledTimes(1);
     expect((await invoke("GET", "state", h.services)).payload).toMatchObject({ revision: 3, state });
   });
+  it("serves generated lessons through the existing state, plan and read-only tool contracts", async () => {
+    const state = { ...campusFixture(), events: [], recurrences: [{ id: "weekly", title: "周课程", placeId: "classroom", timezone: "Asia/Shanghai",
+      startDate: "2026-10-26", untilDate: "2026-11-23", startTime: "08:30", endTime: "10:00", endDayOffset: 0,
+      intervalWeeks: 1, weekdays: [1], status: "scheduled" }] };
+    const h = host(state);
+    const contributions: PluginApiContribution[] = [];
+    registerFlowCampusApiContract({ registerPluginApiContribution: contribution => { contributions.push(contribution); return () => undefined; } });
+    for (const route of contributions[0]!.openApiRoutes!) {
+      const endpoint = endpoints().find(item => item.method.toLowerCase() === route.method && item.path === route.path)!;
+      const response = await endpoint.handler(request(route.method === "put" ? { state, expectedRevision: 2, expectedLifecycleGeneration: "generation_1" } : undefined), h.services);
+      expect(response.status ?? 200).toBe(200);
+      expect(route.responses[200]!.schema!.safeParse(response.payload).success).toBe(true);
+    }
+    const tool = createFlowCampusToolContributions(h.services, () => new Date(NOW))[0]!;
+    const result = await tool.provider.execute({ name: "get_campus_plan", arguments: {}, turnId: "turn", attemptId: "attempt", invocationId: "call" });
+    expect(result).toMatchObject({ ok: true, output: { nextEvent: { id: "occ:weekly:2026-10-26" } } });
+    expect(campusToolResultSchema.safeParse(result.output).success).toBe(true);
+  });
   it("does not present a durable revision missing its document as empty data", async () => {
     const h = host(null);
     h.configuration.read.mockResolvedValueOnce({ values: {}, revision: 7, lifecycleGeneration: "generation_1" });

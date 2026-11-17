@@ -48,6 +48,8 @@ export function createCampusUIStore(api: CampusClient | undefined, parentSignal?
   const drawerOpen = ref(false);
   const activeView = ref<CampusView>('today');
   const controller = new AbortController();
+  const disposers = new Set<() => void>();
+  function onDispose(dispose: () => void) { if (disposed) dispose(); else disposers.add(dispose); }
   let disposed = false;
   let loadSequence = 0;
   let planSequence = 0;
@@ -159,6 +161,7 @@ export function createCampusUIStore(api: CampusClient | undefined, parentSignal?
   function dispose(): void {
     if (disposed) return;
     disposed = true;
+    disposers.forEach(dispose => dispose()); disposers.clear();
     controller.abort();
     parentSignal?.removeEventListener('abort', dispose);
     if (refreshTimer) clearInterval(refreshTimer);
@@ -186,6 +189,6 @@ export function createCampusUIStore(api: CampusClient | undefined, parentSignal?
     if (started && !snapshot.value && !loading.value) void reload();
   }
   return { snapshot, state, plan, loading, saving, planning, exporting, readForExport, writable, conflict, error, planError, feedback,
-    drawerOpen, activeView, open, reload, refreshPlan, save, start, connect, dispose, isDisposed: () => disposed };
+    drawerOpen, activeView, open, reload, refreshPlan, save, start, connect, dispose, onDispose, isDisposed: () => disposed };
 }
 export type CampusUIStore = ReturnType<typeof createCampusUIStore>;
