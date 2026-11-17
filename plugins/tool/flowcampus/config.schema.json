@@ -185,6 +185,15 @@
                     "label": "cancelled"
                   }
                 ]
+              },
+              {
+                "key": "sourceKey",
+                "type": "string",
+                "label": "导入来源标识",
+                "required": false,
+                "validation": {
+                  "maxLength": 600
+                }
               }
             ]
           }
@@ -375,6 +384,260 @@
               }
             }
           ]
+        },
+        {
+          "key": "recurrences",
+          "type": "array",
+          "label": "周课表规则",
+          "required": false,
+          "validation": {
+            "maxLength": 64
+          },
+          "items": {
+            "key": "entry",
+            "type": "object",
+            "label": "周课表规则",
+            "required": true,
+            "children": [
+              {
+                "key": "id",
+                "type": "string",
+                "label": "系列标识",
+                "required": true,
+                "validation": {
+                  "maxLength": 70
+                }
+              },
+              {
+                "key": "title",
+                "type": "string",
+                "label": "课程名称",
+                "required": true,
+                "validation": {
+                  "maxLength": 160
+                }
+              },
+              {
+                "key": "placeId",
+                "type": "string",
+                "label": "地点标识",
+                "required": true,
+                "validation": {
+                  "maxLength": 100
+                }
+              },
+              {
+                "key": "timezone",
+                "type": "string",
+                "label": "课程时区",
+                "required": true,
+                "validation": {
+                  "maxLength": 80
+                }
+              },
+              {
+                "key": "startDate",
+                "type": "string",
+                "label": "起始日期",
+                "required": true,
+                "validation": {
+                  "maxLength": 10
+                }
+              },
+              {
+                "key": "untilDate",
+                "type": "string",
+                "label": "截止日期",
+                "required": true,
+                "validation": {
+                  "maxLength": 10
+                }
+              },
+              {
+                "key": "startTime",
+                "type": "string",
+                "label": "上课时间",
+                "required": true,
+                "validation": {
+                  "maxLength": 8
+                }
+              },
+              {
+                "key": "endTime",
+                "type": "string",
+                "label": "下课时间",
+                "required": true,
+                "validation": {
+                  "maxLength": 8
+                }
+              },
+              {
+                "key": "endDayOffset",
+                "type": "integer",
+                "label": "跨夜天数",
+                "required": true,
+                "validation": {
+                  "min": 0,
+                  "max": 1
+                }
+              },
+              {
+                "key": "intervalWeeks",
+                "type": "integer",
+                "label": "间隔周数",
+                "required": true,
+                "validation": {
+                  "min": 1,
+                  "max": 52
+                }
+              },
+              {
+                "key": "durationSeconds",
+                "type": "integer",
+                "label": "固定时长秒数",
+                "required": false,
+                "validation": {
+                  "min": 1,
+                  "max": 86400
+                }
+              },
+              {
+                "key": "weekdays",
+                "type": "array",
+                "label": "星期",
+                "required": true,
+                "validation": {
+                  "maxLength": 7
+                },
+                "items": {
+                  "key": "day",
+                  "type": "integer",
+                  "label": "星期",
+                  "required": true,
+                  "validation": {
+                    "min": 1,
+                    "max": 7
+                  }
+                }
+              },
+              {
+                "key": "status",
+                "type": "select",
+                "label": "系列状态",
+                "required": true,
+                "options": [
+                  {
+                    "value": "scheduled",
+                    "label": "scheduled"
+                  },
+                  {
+                    "value": "cancelled",
+                    "label": "cancelled"
+                  }
+                ]
+              },
+              {
+                "key": "sourceKey",
+                "type": "string",
+                "label": "导入来源标识",
+                "required": false,
+                "validation": {
+                  "maxLength": 600
+                }
+              }
+            ]
+          }
+        },
+        {
+          "key": "occurrenceOverrides",
+          "type": "array",
+          "label": "单次课程例外",
+          "required": false,
+          "validation": {
+            "maxLength": 512
+          },
+          "items": {
+            "key": "entry",
+            "type": "object",
+            "label": "单次课程例外",
+            "required": true,
+            "children": [
+              {
+                "key": "seriesId",
+                "type": "string",
+                "label": "系列标识",
+                "required": true,
+                "validation": {
+                  "maxLength": 70
+                }
+              },
+              {
+                "key": "originalDate",
+                "type": "string",
+                "label": "原课程日期",
+                "required": true,
+                "validation": {
+                  "maxLength": 10
+                }
+              },
+              {
+                "key": "status",
+                "type": "select",
+                "label": "单次状态",
+                "required": true,
+                "options": [
+                  {
+                    "value": "scheduled",
+                    "label": "scheduled"
+                  },
+                  {
+                    "value": "arrived",
+                    "label": "arrived"
+                  },
+                  {
+                    "value": "cancelled",
+                    "label": "cancelled"
+                  }
+                ]
+              },
+              {
+                "key": "startAt",
+                "type": "string",
+                "label": "调课开始时刻",
+                "required": false,
+                "validation": {
+                  "maxLength": 64
+                }
+              },
+              {
+                "key": "endAt",
+                "type": "string",
+                "label": "调课结束时刻",
+                "required": false,
+                "validation": {
+                  "maxLength": 64
+                }
+              },
+              {
+                "key": "title",
+                "type": "string",
+                "label": "调课名称",
+                "required": false,
+                "validation": {
+                  "maxLength": 160
+                }
+              },
+              {
+                "key": "placeId",
+                "type": "string",
+                "label": "调课地点",
+                "required": false,
+                "validation": {
+                  "maxLength": 100
+                }
+              }
+            ]
+          }
         }
       ],
       "description": "在校园规划面板维护；路线耗时记录不会构成实时导航。清空或重置本字段会移除本插件的日程与任务。",

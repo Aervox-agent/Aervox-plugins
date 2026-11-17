@@ -3,10 +3,12 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { CalendarClock, CalendarDays, MapPin, ListTodo, Route, SlidersHorizontal } from 'lucide-vue-next';
 import { AervoxButton, AervoxNavDialog, AervoxSettingsHeading } from '@aervox/ui/primitives';
 import { useDialogPrompts, useMobileBackNavigation } from '@aervox/ui/material3';
-import { CAMPUS_LIMITS, type CampusEvent, type CampusPlace, type CampusTask, type CampusRoute } from '../domain/index.js';
+import { CAMPUS_LIMITS, updateCampusOccurrence, type CampusEvent, type CampusPlace, type CampusTask, type CampusRoute } from '../domain/index.js';
 import { useCampusStore, type CampusView } from './store.js';
 import { absoluteDateTime, localDateTime, clock, dateLabel } from './time.js';
 import CampusPlanSummary from './CampusPlanSummary.vue';
+import CampusScheduleManager from './CampusScheduleManager.vue';
+import CampusImportDialog from './CampusImportDialog.vue';
 
 const store = useCampusStore();
 const { drawerOpen, activeView, state, plan, writable, loading, saving, planning, exporting, error, planError, feedback, conflict } = store;
@@ -16,6 +18,7 @@ const editorVisible = ref(false);
 const editorElement = ref<HTMLElement>();
 const formError = ref('');
 const confirming = ref(false);
+const importOpen = ref(false);
 type EditorView = 'places' | 'events' | 'tasks' | 'routes';
 const pendingDrafts = ref<Record<EditorView, boolean>>({ places: false, events: false, tasks: false, routes: false });
 const blocked = computed(() => !writable.value || confirming.value);
@@ -56,7 +59,7 @@ watch([drawerOpen, editorVisible], ([open, editing]) => {
   else if (!open || !editing) { backLayer?.close(); backLayer = undefined; }
 });
 watch(drawerOpen, open => { if (!open) editorVisible.value = false; });
-watch(activeView, () => { editorVisible.value = false; formError.value = ''; });
+watch(activeView, () => { editorVisible.value = false; importOpen.value = false; formError.value = ''; });
 onBeforeUnmount(() => { disposed = true; backLayer?.dispose(); backLayer = undefined; exportUrls.forEach(url => URL.revokeObjectURL(url)); exportUrls.clear(); });
 
 async function exportCampusData() {
@@ -163,6 +166,8 @@ async function submitEditor() {
       if (!draft.isNew) requireExisting(draft.id, current.events);
       // An unchanged local field retains its known instant, including seconds and DST folds.
       const item: CampusEvent = { id: draft.id, title: draft.title.trim(), placeId: draft.placeId, status: draft.status,
+        ...(!draft.isNew && current.events.find(value => value.id === draft.id)?.sourceKey
+          ? { sourceKey: current.events.find(value => value.id === draft.id)!.sourceKey } : {}),
         startAt: draft.originalStartAt && draft.startAt === draft.initialLocalStart ? draft.originalStartAt : absoluteDateTime(draft.startAt, draft.timezone),
         endAt: draft.originalEndAt && draft.endAt === draft.initialLocalEnd ? draft.originalEndAt : absoluteDateTime(draft.endAt, draft.timezone) };
       if (Date.parse(item.endAt) <= Date.parse(item.startAt)) throw new Error('结束时间必须晚于开始时间。');
@@ -204,6 +209,7 @@ const draftAlreadySaved = computed(() => !editingExisting.value && (activeView.v
   : state.value?.routes.some(item => routeKey(item) === `${routeDraft.value.originId}:${routeDraft.value.destinationId}` && item.observedAt === routeDraft.value.observedAt)));
 function placeInUse(id: string): boolean {
   return Boolean(state.value && (state.value.settings.originId === id || state.value.events.some(item => item.placeId === id)
+    || state.value.recurrences?.some(item => item.placeId === id) || state.value.occurrenceOverrides?.some(item => item.placeId === id)
     || state.value.routes.some(item => item.originId === id || item.destinationId === id)));
 }
 async function remove(kind: 'places' | 'events' | 'tasks' | 'routes', key: string, title: string) {
@@ -223,7 +229,8 @@ async function remove(kind: 'places' | 'events' | 'tasks' | 'routes', key: strin
 }
 async function markEvent(id: string, status: CampusEvent['status']) {
   if (blocked.value || !state.value) return;
-  await store.save({ ...state.value, events: state.value.events.map(item => item.id === id ? { ...item, status } : item) });
+  const event = state.value.events.find(item => item.id === id) ?? (plan.value?.nextEvent?.id === id ? plan.value.nextEvent : null);
+  if (event) await store.save(updateCampusOccurrence(state.value, event, status));
 }
 async function markTask(id: string, status: CampusTask['status']) {
   if (blocked.value || !state.value) return;
@@ -329,6 +336,11 @@ const editorTitle = computed(() => `${editingExisting.value ? '编辑' : '新增
               </form>
             </section>
           </section>
+          <section v-if="activeView === 'events'" class="campus-section">
+            <AervoxButton :disabled="blocked || !state.places.length" @click="importOpen = true">导入课表</AervoxButton>
+            <CampusScheduleManager />
+          </section>
+          <CampusImportDialog v-if="activeView === 'events'" v-model="importOpen" />
         </template>
       </div>
     </template>
