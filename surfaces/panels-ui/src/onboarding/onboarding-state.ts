@@ -7,9 +7,4 @@ export function markOnboardingCompleted(storage?: OnboardingStorage): void {
   try { storage?.setItem(ONBOARDING_COMPLETION_KEY, 'true'); } catch { /* Still complete this window when storage is unavailable. */ }
 }
 
-/** The host reports saved model state without exposing provider credentials. */
-export interface OnboardingModelStatus {
-  state: 'loading' | 'configured' | 'unconfigured' | 'error';
-  busy: boolean;
-  modelId?: string;
-}
+export type { ModelSetupStatus as OnboardingModelStatus } from '@aervox/ui/companion';
