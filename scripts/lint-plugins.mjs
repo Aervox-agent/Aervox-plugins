@@ -69,6 +69,7 @@ export async function lintPlugins({ root = collectionRoot, base } = {}) {
       const tests = await fs.readdir(path.join(directory, 'test'));
       if (!tests.some(file => /\.test\.[cm]?[jt]s$/.test(file))) throw new Error(`${id}: source tests required`);
       if (contracts.comparePluginVersions(manifest.requires?.hostApiVersion.min ?? '1.0.0', '1.1.0') === -1) throw new Error(`${id}: ecosystem releases require Host API >=1.1.0`);
+      if (manifest.metadata.installation !== undefined && contracts.comparePluginVersions(manifest.requires?.hostApiVersion.min ?? '1.0.0', '1.2.0') === -1) throw new Error(`${id}: installation policy requires Host API >=1.2.0`);
       const snapshot = await releaseSnapshot(directory, manifest);
       const nestedKeys = field => {
         if (field.children) checkKeys(field.children);

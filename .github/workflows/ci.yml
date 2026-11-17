@@ -16,12 +16,12 @@ permissions:
   contents: read
 
 env:
-  # Validate native Android UI and the integrated learning/safety contracts against this public host.
-  HOST_COMMIT: ${{ inputs.host_commit || 'fa6d07bcfdcc681a2505c5d972a0218dda317244' }}
+  # This public PostgreSQL integration includes the matching root lock, current contracts and reviewed safety fixes.
+  HOST_COMMIT: ${{ inputs.host_commit || '3650c3b88aac9602f79becd1710733e7cdf87d3a' }}
 
 jobs:
   integration:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - name: Validate pinned host commit
@@ -66,6 +66,7 @@ jobs:
         working-directory: host
         run: |
           mise exec -- node --test plugins/scripts/check-host-workspaces.test.mjs
+          mise exec -- node --test plugins/scripts/host-integration-postgresql.test.mjs
           mise exec -- node plugins/scripts/check-host-workspaces.mjs
       - name: Install pinned native check components
         working-directory: host
@@ -91,9 +92,28 @@ jobs:
           else
             mise exec -- node plugins/scripts/lint-plugins.mjs
           fi
+      - name: Start isolated PostgreSQL 16 for host integration tests
+        working-directory: host
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-16
+          pg_test_root=$(mktemp -d "$RUNNER_TEMP/aervox-pg.XXXXXX")
+          printf 'AERVOX_CI_PG_ROOT=%s\n' "$pg_test_root" >> "$GITHUB_ENV"
+          mkdir -m 700 "$pg_test_root/socket"
+          /usr/lib/postgresql/16/bin/initdb -D "$pg_test_root/data" --no-locale --encoding=UTF8 --auth-local=trust --auth-host=reject
+          /usr/lib/postgresql/16/bin/pg_ctl -D "$pg_test_root/data" -l "$pg_test_root/server.log" -o "-k $pg_test_root/socket -p 65439 -h ''" -w start
+          pg_test_url="postgresql://$(id -un)@localhost/postgres?host=$pg_test_root/socket&port=65439"
+          printf 'AERVOX_PG_TEST_URL=%s\nAERVOX_TEST_POSTGRES_URL=%s\n' "$pg_test_url" "$pg_test_url" >> "$GITHUB_ENV"
       - name: Validate host and collection
         working-directory: host
         run: ./aervox ci all
       - name: Audit locked dependencies
         working-directory: host
         run: mise exec -- pnpm check:dependency-audit
+      - name: Stop isolated PostgreSQL
+        if: always() && env.AERVOX_CI_PG_ROOT != ''
+        working-directory: host
+        run: |
+          if [ -s "$AERVOX_CI_PG_ROOT/data/postmaster.pid" ]; then
+            /usr/lib/postgresql/16/bin/pg_ctl -D "$AERVOX_CI_PG_ROOT/data" -m immediate -w stop
+          fi
