@@ -56,6 +56,21 @@ beforeEach(() => {
 });
 
 describe('mobile session panel intent wiring', () => {
+  it('keeps original deletion checks independent of list filtering, disappearance and execution locks', async () => {
+    const original = savedSessions[1]!;
+    const wrapper = mount(MobileSessionsDialog, { props: {
+      modelValue: true, sessions: savedSessions, activeSessionId: 'ses_sql', pendingDeletes: [original], switchLocked: true,
+    }, global });
+    await wrapper.get('input[aria-label="搜索已加载会话"]').setValue('no match');
+    await wrapper.setProps({ sessions: [] });
+    expect(wrapper.get('[aria-label="待确认的删除结果"]').text()).toContain(original.title);
+    await button(wrapper, `检查「${original.title}」的删除结果`).trigger('click');
+    expect(wrapper.emitted('check-delete')).toEqual([[original.id]]);
+    expect(wrapper.emitted('delete')).toBeUndefined(); expect(request).not.toHaveBeenCalled();
+    await wrapper.setProps({ modelValue: false }); await wrapper.setProps({ modelValue: true, managing: true });
+    button(wrapper, `检查「${original.title}」的删除结果`).element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(wrapper.emitted('check-delete')).toHaveLength(1);
+  });
   it('loads more searched pages while execution is locked and describes the loaded scope', async () => {
     const wrapper = mount(MobileSessionsDialog, { props: {
       modelValue: true, sessions: savedSessions, activeSessionId: 'ses_sql', hasMore: true, switchLocked: true,

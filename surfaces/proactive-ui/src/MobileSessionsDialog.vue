@@ -9,14 +9,17 @@ const props = withDefaults(defineProps<{
   loading?: boolean; error?: string | null; changing?: boolean;
   switchLocked?: boolean; lockReason?: string; notice?: string;
   managing?: boolean; manageError?: string | null; hasMore?: boolean;
+  pendingDeletes?: readonly SessionItem[];
 }>(), {
   loading: false, error: null, changing: false, switchLocked: false, lockReason: '', notice: '',
   managing: false, manageError: null, hasMore: false,
+  pendingDeletes: () => [],
 });
 const emit = defineEmits<{
   'update:modelValue': [value: boolean]; refresh: []; new: []; more: [];
   select: [id: string]; history: [session: SessionItem];
   rename: [id: string, title: string]; delete: [id: string];
+  'check-delete': [id: string];
 }>();
 const TITLE_LIMIT = 200;
 const query = ref('');
@@ -59,6 +62,9 @@ function confirmDelete(session: SessionItem) {
   emit('delete', session.id);
   closeManage();
 }
+function checkDelete(id: string) {
+  if (!props.managing && !props.loading && !props.changing && props.pendingDeletes.some(item => item.id === id)) emit('check-delete', id);
+}
 // A closed panel or a refresh that drops the edited session must not keep a dead editor.
 watch(() => props.modelValue, open => { if (!open) closeManage(); });
 watch(() => props.sessions, list => {
@@ -74,6 +80,12 @@ watch(() => props.sessions, list => {
     </div>
     <p v-if="notice" role="alert" class="mobile-session-error">{{ notice }}</p>
     <p v-if="manageError" role="alert" class="mobile-session-error">{{ manageError }}</p>
+    <ul v-if="pendingDeletes.length" class="mobile-session-recovery" aria-label="待确认的删除结果">
+      <li v-for="target in pendingDeletes" :key="target.id" class="mobile-session-note">
+        <p>「{{ target.title }}」的删除结果尚未确认。检查只读取当前结果。</p>
+        <AervoxButton variant="secondary" :disabled="managing || loading || changing" :aria-label="`检查「${target.title}」的删除结果`" @click="checkDelete(target.id)">检查删除结果</AervoxButton>
+      </li>
+    </ul>
     <p v-if="switchLocked" class="mobile-session-note" role="status">{{ lockReason || '当前回复或交互尚未结束。可以回看记录，结束当前回复后再切换或新建。' }}</p>
     <label class="mobile-session-search">搜索已加载会话<input v-model="query" class="aervox-field" type="search" autocomplete="off" aria-label="搜索已加载会话" placeholder="输入会话标题" /></label>
     <p v-if="loading" role="status">正在读取会话…</p>
@@ -138,4 +150,6 @@ watch(() => props.sessions, list => {
 .mobile-session-manage-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .mobile-session-confirm { display: grid; gap: 8px; }
 .mobile-session-error { color: var(--md-sys-color-error); }
+.mobile-session-recovery { list-style: none; padding: 0; margin: 0 0 16px; display: grid; gap: 8px; }
+.mobile-session-recovery p { margin: 0 0 8px; }
 </style>
