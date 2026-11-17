@@ -11,6 +11,7 @@ import {
   type ToolItemDto,
 } from '@aervox/api-client'
 import VoiceAbilityCard, {type VoiceSelectionValue} from './VoiceAbilityCard.vue'
+import { getAvailableLive2DModels } from '@aervox/ui/companion'
 
 const props = defineProps<{
   open: boolean
@@ -46,6 +47,11 @@ const useAllSkills = ref(true)
 const selectedSkillNames = ref<string[]>([])
 
 const voice = ref<VoiceSelectionValue | null>(null)
+const live2dModelId = ref('')
+const availableLive2DModels = getAvailableLive2DModels()
+const unavailableLive2DModelId = computed(() => live2dModelId.value
+  && !availableLive2DModels.some(model => model.id === live2dModelId.value)
+  ? live2dModelId.value : '')
 
 const isEdit = computed(() => !!props.personaId)
 
@@ -65,6 +71,7 @@ function clearDraft() {
   availableTools.value = []; availableSkills.value = []
   useAllTools.value = true; selectedToolIds.value = []
   useAllSkills.value = true; selectedSkillNames.value = []; voice.value = null
+  live2dModelId.value = ''
   loading.value = false; saving.value = false; ready.value = false; loadedOwner = undefined
 }
 function isCurrent(owner: {generation: number; personaId: string | null}) {
@@ -96,6 +103,7 @@ watch(
           useAllSkills.value = detail.revision.config.allowedSkillNames === undefined
           selectedSkillNames.value = [...detail.revision.config.allowedSkillNames ?? []]
           voice.value = detail.revision.config.voice ? {...detail.revision.config.voice} : null
+          live2dModelId.value = detail.revision.config.live2dModelId ?? ''
         }
       }
       loadedOwner = owner; ready.value = true
@@ -194,6 +202,7 @@ async function save() {
       allowedSkillNames: useAllSkills.value ? undefined : [...selectedSkillNames.value],
       allowedMcpToolIds: useAllTools.value ? undefined : [...selectedToolIds.value],
       voice: voice.value ? {...voice.value, ...(voice.value.settings ? {settings: {...voice.value.settings}} : {})} : undefined,
+      ...(live2dModelId.value ? { live2dModelId: live2dModelId.value } : {}),
     }
 
     if (owner.personaId) {
@@ -278,6 +287,17 @@ async function save() {
             placeholder="角色简述，便于在列表中快速辨别"
             maxlength="200"
           />
+        </div>
+        <div class="field-block">
+          <label class="field-label" for="persona-live2d-model">Live2D 形象</label>
+          <select id="persona-live2d-model" v-model="live2dModelId" class="aervox-field persona-input" aria-describedby="persona-live2d-hint">
+            <option value="">默认 · Mizuki</option>
+            <option v-for="model in availableLive2DModels" :key="model.id" :value="model.id">{{ model.displayName }}</option>
+            <option v-if="unavailableLive2DModelId" :value="unavailableLive2DModelId" disabled>不可用 · {{ unavailableLive2DModelId }}</option>
+          </select>
+          <small id="persona-live2d-hint" class="live2d-binding-hint" :role="unavailableLive2DModelId ? 'status' : undefined">
+            {{ unavailableLive2DModelId ? '绑定的形象目前不可用，暂显示 Mizuki。保存其他设定会保留此绑定。' : '未指定时使用 Mizuki。绑定只影响外观，启用人格后生效。' }}
+          </small>
         </div>
       </div>
 
@@ -414,6 +434,12 @@ async function save() {
   font-size: 12px;
   font-weight: 600;
   color: var(--text-secondary);
+}
+
+.live2d-binding-hint {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .persona-input {
