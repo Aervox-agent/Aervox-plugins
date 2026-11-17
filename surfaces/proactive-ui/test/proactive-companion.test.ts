@@ -1289,6 +1289,149 @@ it('retains the active session text and attachment when deletion is rejected', a
   expect(wrapper.getComponent(MobileSessionsDialog).props('manageError')).toContain('删除结果未能确认');
 });
 
+it('retains the original deletion target after list disappearance and only confirms through an explicit exact GET', async () => {
+  const values = new Map([
+    ['aervox-mobile-draft:ses_recent', 'original draft'],
+    ['aervox-mobile-draft:attachment-ses_recent', JSON.stringify({ name: 'old.txt', text: 'original attachment' })],
+    ['aervox-mobile-draft:other', 'another draft'],
+  ]);
+  const storage = { getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } };
+  let deleted = false;
+  request.mockImplementation(async (method, path) => {
+    if (method === 'GET' && path.split('?')[0] === '/v1/sessions') return { items: deleted ? [] : [recentSession] };
+    if (method === 'DELETE') { deleted = true; throw new TypeError('response lost'); }
+    if (method === 'GET' && path === '/v1/sessions/ses_recent') throw new AervoxHttpError(404, path, { code: 'SESSION_NOT_FOUND' });
+    return requestImplementation(method, path);
+  });
+  const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true, storage);
+  const dialog = wrapper.getComponent(MobileSessionsDialog);
+  dialog.vm.$emit('delete', recentSession.id); await flushPromises();
+  expect(dialog.props('pendingDeletes')).toEqual([recentSession]);
+  dialog.vm.$emit('refresh'); await flushPromises();
+  expect(dialog.props('sessions')).toEqual([]); expect(dialog.props('pendingDeletes')).toEqual([recentSession]);
+  expect(values.get('aervox-mobile-draft:ses_recent')).toBe('original draft');
+  const before = request.mock.calls.length;
+  dialog.vm.$emit('check-delete', recentSession.id); await flushPromises();
+  expect(request.mock.calls.slice(before)).toEqual([['GET', '/v1/sessions/ses_recent']]);
+  expect(request.mock.calls.filter(([method]) => method === 'DELETE')).toHaveLength(1);
+  expect(request.mock.calls.filter(([method]) => method === 'POST')).toHaveLength(0);
+  expect(dialog.props('pendingDeletes')).toEqual([]);
+  expect(values.has('aervox-mobile-draft:ses_recent')).toBe(false);
+  expect(values.has('aervox-mobile-draft:attachment-ses_recent')).toBe(false);
+  expect(values.get('aervox-mobile-draft:other')).toBe('another draft');
+});
+
+it.each(['recreated', 'generic-404', 'source-404', 'wrong-id', 'malformed', 'network'] as const)('keeps the original unknown target and drafts when an exact deletion check returns %s', async outcome => {
+  localStorage.setItem('aervox-mobile-draft:ses_recent', 'original draft');
+  request.mockImplementation(async (method, path) => {
+    if (method === 'DELETE') throw new TypeError('response lost');
+    if (method === 'GET' && path === '/v1/sessions/ses_recent') {
+      if (outcome === 'recreated') return { ...recentSession, title: 'new same-ID object', createdAt: 'new' };
+      if (outcome === 'generic-404') throw new AervoxHttpError(404, path);
+      if (outcome === 'source-404') throw new AervoxHttpError(404, path, { code: 'SOURCE_RETIRED' });
+      if (outcome === 'wrong-id') return { ...recentSession, id: 'different' };
+      if (outcome === 'malformed') return { id: recentSession.id };
+      throw new TypeError('network failed');
+    }
+    return requestImplementation(method, path);
+  });
+  const wrapper = await mountSurface('mobile', true, recentSession.id);
+  const dialog = wrapper.getComponent(MobileSessionsDialog);
+  dialog.vm.$emit('delete', recentSession.id); await flushPromises();
+  const before = request.mock.calls.length;
+  dialog.vm.$emit('check-delete', recentSession.id); await flushPromises();
+  expect(request.mock.calls.slice(before)).toEqual([['GET', '/v1/sessions/ses_recent']]);
+  expect(dialog.props('pendingDeletes')).toEqual([recentSession]);
+  expect(dialog.props('manageError')).toContain('未确认');
+  expect(localStorage.getItem('aervox-mobile-draft:ses_recent')).toBe('original draft');
+  expect(request.mock.calls.filter(([method]) => method === 'DELETE')).toHaveLength(1);
+  if (outcome === 'recreated') expect(dialog.props('sessions')[0].title).toBe('new same-ID object');
+});
+
+it('does not reset a new owner Turn or speak old deletion feedback when a deferred DELETE finally completes', async () => {
+  const api = await import('@aervox/api-client');
+  const create = api.createConversationController;
+  let controller!: ReturnType<typeof create>;
+  const factory = vi.spyOn(api, 'createConversationController').mockImplementation((...args) => { controller = create(...args); return controller; });
+  let finishDelete!: () => void;
+  let finishTurn!: () => void;
+  let fresh: Promise<unknown> | undefined;
+  const next = { ...recentSession, id: 'new_owner', title: 'new owner' };
+  request.mockImplementation(async (method, path) => {
+    if (method === 'GET' && path.split('?')[0] === '/v1/sessions') return { items: [recentSession, next] };
+    if (method === 'DELETE') return new Promise<void>(resolve => { finishDelete = resolve; });
+    return requestImplementation(method, path);
+  });
+  streamTurn.mockImplementation(async (_id, _text, callbacks, options) => {
+    await options.onAccepted?.('turn_new_owner');
+    await new Promise<void>(resolve => { finishTurn = () => { callbacks.onDone(); resolve(); }; });
+  });
+  try {
+    const wrapper = await mountSurface('mobile', true, recentSession.id);
+    const dialog = wrapper.getComponent(MobileSessionsDialog);
+    dialog.vm.$emit('delete', recentSession.id); await flushPromises();
+    expect(finishDelete).toBeTypeOf('function');
+    setSessionId(next.id);
+    fresh = controller.submit(next.id, 'new owner request', { onDelta: vi.fn(), onDone: vi.fn() }, { idempotencyKey: 'new-owner-request' });
+    await vi.waitFor(() => expect(controller.state.turnId).toBe('turn_new_owner'));
+    expect(wrapper.find('.pc-stop').exists()).toBe(true);
+    finishDelete(); await flushPromises();
+    expect(controller.state.turnId).toBe('turn_new_owner');
+    expect(wrapper.find('.pc-stop').exists()).toBe(true);
+    expect(dialog.props('notice')).toBe(`已删除「${recentSession.title}」。`);
+  } finally { finishTurn?.(); await fresh; factory.mockRestore(); }
+});
+
+it.each(['selection', 'unmount', 'same-ID-list-refresh'] as const)('keeps unknown deletion drafts when a deferred missing GET outlives %s', async retirement => {
+  const api = await import('@aervox/api-client');
+  const createSessions = api.useAervoxSessions;
+  let sessions!: ReturnType<typeof createSessions>;
+  const hook = vi.spyOn(api, 'useAervoxSessions').mockImplementation((...args) => { sessions = createSessions(...args); return sessions; });
+  const rebuilt = { ...recentSession, title: 'new local same-ID object', createdAt: 'new' };
+  let refreshed = false;
+  let finishCheck!: () => void;
+  request.mockImplementation(async (method, path) => {
+    if (method === 'GET' && path.split('?')[0] === '/v1/sessions') return { items: [refreshed ? rebuilt : recentSession] };
+    if (method === 'DELETE') throw new TypeError('response lost');
+    if (method === 'GET' && path === '/v1/sessions/ses_recent') return new Promise((_resolve, reject) => {
+      finishCheck = () => reject(new AervoxHttpError(404, path, { code: 'SESSION_NOT_FOUND' }));
+    });
+    return requestImplementation(method, path);
+  });
+  const values = new Map([
+    ['aervox-mobile-draft:ses_recent', 'original draft'],
+    ['aervox-mobile-draft:attachment-ses_recent', JSON.stringify({ name: 'old.txt', text: 'original attachment' })],
+  ]);
+  const storage = { getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); }, removeItem: (key: string) => { values.delete(key); } };
+  try {
+    const wrapper = await mountSurface('mobile', true, recentSession.id, undefined, true, storage);
+    const dialog = wrapper.getComponent(MobileSessionsDialog);
+    dialog.vm.$emit('delete', recentSession.id); await flushPromises();
+    dialog.vm.$emit('check-delete', recentSession.id); await flushPromises();
+    expect(finishCheck).toBeTypeOf('function');
+    if (retirement === 'selection') setSessionId('new_owner');
+    else if (retirement === 'unmount') wrapper.unmount();
+    else {
+      refreshed = true;
+      await sessions.fetchSessions({ preserveSelection: true, includeActive: true });
+      values.set('aervox-mobile-draft:ses_recent', 'new same-ID draft');
+      values.set('aervox-mobile-draft:attachment-ses_recent', JSON.stringify({ name: 'new.txt', text: 'new same-ID attachment' }));
+    }
+    finishCheck(); await flushPromises();
+    expect(values.get('aervox-mobile-draft:ses_recent')).toBe(retirement === 'same-ID-list-refresh' ? 'new same-ID draft' : 'original draft');
+    expect(values.get('aervox-mobile-draft:attachment-ses_recent')).toContain(retirement === 'same-ID-list-refresh' ? 'new same-ID attachment' : 'original attachment');
+    expect(sessions.sessions.value).toEqual([retirement === 'same-ID-list-refresh' ? rebuilt : recentSession]);
+    if (retirement !== 'unmount') {
+      expect(dialog.props('pendingDeletes')).toEqual([recentSession]);
+      expect(dialog.props('manageError')).toContain('仍未确认');
+    }
+    expect(request.mock.calls.filter(([method]) => method === 'DELETE')).toHaveLength(1);
+    expect(request.mock.calls.filter(([method]) => method === 'POST')).toHaveLength(0);
+  } finally { hook.mockRestore(); }
+});
+
 it.each(['rejected', 'confirmed'] as const)('keeps deletion-pending drafts until a %s receipt after unmount', async outcome => {
   const second = { ...recentSession, id: 'second', title: '另一段对话' };
   const attachment = JSON.stringify({ name: 'private.txt', text: '尚未确认删除的附件' });
