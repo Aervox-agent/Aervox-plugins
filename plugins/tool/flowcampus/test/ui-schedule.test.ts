@@ -26,6 +26,13 @@ const field = (wrapper: VueWrapper, label: string) => {
   if (!item) throw new Error(`Missing label ${label}`);
   return item.find('input,select,textarea');
 };
+async function previewImport(wrapper: VueWrapper) {
+  await button(wrapper, '生成导入预览').trigger('click');
+  await vi.waitFor(() => {
+    expect(wrapper.find('.campus-import-rows').exists()).toBe(true);
+    expect(button(wrapper, '生成导入预览').attributes('disabled')).toBeUndefined();
+  });
+}
 async function setup(component: typeof CampusScheduleManager | typeof CampusImportDialog, initial = campusFixture()) {
   let saved = structuredClone(initial); let revision = 1; let rejectNext = false; let lifecycleGeneration = 'g1';
   const request = vi.fn(async (method: string, path: string, body?: unknown) => {
@@ -101,12 +108,12 @@ describe('weekly schedule management and import ownership', () => {
   it('requires a fresh preview after lifecycle rotation and saves with the current plugin identity', async () => {
     const c = await setup(CampusImportDialog);
     await field(c.wrapper, '文件内容').setValue(csv);
-    await button(c.wrapper, '生成导入预览').trigger('click'); await flushPromises();
+    await previewImport(c.wrapper);
     c.changeLifecycle(); await c.store.reload(); await flushPromises();
     await button(c.wrapper, '确认导入 1 条').trigger('click'); await flushPromises();
     expect(c.wrapper.text()).toContain('预览后数据已改变');
     expect(c.request.mock.calls.filter(call => call[0] === 'PUT')).toHaveLength(0);
-    await button(c.wrapper, '生成导入预览').trigger('click'); await flushPromises();
+    await previewImport(c.wrapper);
     await button(c.wrapper, '确认导入 1 条').trigger('click'); await flushPromises();
     const write = c.request.mock.calls.find(call => call[0] === 'PUT')!;
     expect(write[1]).toBe('/v1/plugins/ap-tool-flowcampus/state');
@@ -136,7 +143,7 @@ describe('weekly schedule management and import ownership', () => {
   it('does not write before import confirmation and detects newer snapshots before applying', async () => {
     const c = await setup(CampusImportDialog);
     await field(c.wrapper, '文件内容').setValue(csv);
-    await button(c.wrapper, '生成导入预览').trigger('click'); await flushPromises();
+    await previewImport(c.wrapper);
     expect(c.wrapper.text()).toContain('新课程');
     expect(c.request.mock.calls.filter(call => call[0] === 'PUT')).toHaveLength(0);
     c.external(); await c.store.reload(); await flushPromises();
@@ -147,11 +154,11 @@ describe('weekly schedule management and import ownership', () => {
   it('uses stable imported identities and does not select updates by default', async () => {
     const c = await setup(CampusImportDialog);
     await field(c.wrapper, '文件内容').setValue(csv);
-    await button(c.wrapper, '生成导入预览').trigger('click'); await flushPromises();
+    await previewImport(c.wrapper);
     await button(c.wrapper, '确认导入 1 条').trigger('click'); await flushPromises();
     expect(c.saved().events).toHaveLength(2);
     await field(c.wrapper, '文件内容').setValue(csv.replace('新课程', '课程更新'));
-    await button(c.wrapper, '生成导入预览').trigger('click'); await flushPromises();
+    await previewImport(c.wrapper);
     expect(c.wrapper.text()).toContain('更新已有记录');
     expect(button(c.wrapper, '确认导入 0 条').attributes('disabled')).toBeDefined();
     await c.wrapper.get('.campus-import-rows input').setValue(true);
@@ -184,7 +191,7 @@ describe('weekly schedule management and import ownership', () => {
     const c = await setup(CampusImportDialog);
     await field(c.wrapper, '文件内容').setValue(csv);
     await field(c.wrapper, '未识别地点统一匹配').setValue('classroom');
-    await button(c.wrapper, '生成导入预览').trigger('click'); await flushPromises();
+    await previewImport(c.wrapper);
     c.wrapper.unmount();
     const reopened = c.remount(); await flushPromises();
     expect(field(reopened, '文件内容').element).toHaveProperty('value', csv);
