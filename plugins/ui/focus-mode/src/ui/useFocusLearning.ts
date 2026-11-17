@@ -13,6 +13,7 @@
  */
 import { computed, ref, shallowRef } from 'vue';
 import { aervoxConfirm, useUIPluginContext, type UIPluginContext } from '@aervox/ui/plugin-api';
+import type { KnowledgeItemDto, ReviewCompletionDto, ReviewItemDto } from '@aervox/api-client';
 
 type FocusLearningApi = UIPluginContext['learning'];
 
@@ -47,11 +48,22 @@ const practiceIndex = ref(0);
 const practiceReadyToComplete = ref(false);
 const practiceAnswer = ref('');
 const practiceFeedback = ref<{ judgement: string; nextStep: string } | null>(null);
-const practiceSubmission = ref<{ sessionId: string; questionId: string; answer: string; idempotencyKey: string } | null>(null);
+const practiceSubmission = ref<{ sessionId: string; questionId: string; answer: string; idempotencyKey: string; elapsedSeconds: number; hintsUsed: number } | null>(null);
 const practiceReport = ref<import('@aervox/api-client').PracticeReportDto | null>(null);
 const questionStartTime = ref<number>(0);
 const practiceBusy = ref(false);
 const practiceError = ref<string | null>(null);
+
+const selectedReview = shallowRef<ReviewItemDto | null>(null);
+const reviewKnowledge = shallowRef<KnowledgeItemDto | null>(null);
+const reviewReceipt = shallowRef<{result: ReviewCompletionDto; isCorrect: boolean} | null>(null);
+type KnowledgeContent = Pick<KnowledgeItemDto, 'id' | 'concept' | 'sourceStatus' | 'createdAt'>;
+const reviewSubmission = shallowRef<{owner: NonNullable<FocusLearningApi>; item: ReviewItemDto; isCorrect: boolean; knowledge: KnowledgeContent} | null>(null);
+const reviewLoading = ref(false);
+const reviewBusy = ref(false);
+const reviewError = ref<string | null>(null);
+const ignoredReviewIds = ref<string[]>([]);
+let reviewReadRevision = 0;
 
 // ── 错题状态 ──
 const mistakeFilter = ref<'active' | 'mastered' | 'dismissed' | 'all'>('active');
@@ -69,7 +81,7 @@ const planBusyId = ref<string | null>(null);
 const planError = ref<string | null>(null);
 
 function requireApi(): FocusLearningApi {
-  if (!boundApi.value) throw new Error('[focus-mode] initFocusLearning() 必须先于使用学习状态调用');
+  if (!boundApi.value) throw new Error('[focus-mode] 学习 API 暂时不可用');
   return boundApi.value;
 }
 
@@ -92,6 +104,15 @@ function bindApi(api: FocusLearningApi | null): void {
   practiceReport.value = null;
   practiceBusy.value = false;
   practiceError.value = null;
+  reviewReadRevision++;
+  selectedReview.value = null;
+  reviewKnowledge.value = null;
+  reviewReceipt.value = null;
+  reviewSubmission.value = null;
+  reviewLoading.value = false;
+  reviewBusy.value = false;
+  reviewError.value = null;
+  ignoredReviewIds.value = [];
   mistakeFilter.value = 'active';
   mistakeReasonFilter.value = 'all';
   selectedMistakeIds.value = [];
@@ -109,7 +130,140 @@ function bindApi(api: FocusLearningApi | null): void {
   // 宿主 api 实例上的只读视图（插件不持有数据真源，只消费）
   const mistakes = computed(() => boundApi.value?.mistakes.value ?? []);
   const learningPlans = computed(() => boundApi.value?.learningPlans.value ?? []);
-  const apiError = computed(() => boundApi.value?.error.value ?? null);
+  const apiError = computed(() => boundApi.value?.error.value ? '部分学习记录暂时不可用，请刷新重试。' : null);
+  const dueReviews = computed(() => boundApi.value?.dueReviews?.value ?? []);
+  const visibleReviews = computed(() => dueReviews.value.filter(item => !ignoredReviewIds.value.includes(item.id)));
+  const completedReviews = computed(() => boundApi.value?.completedReviews?.value ?? []);
+  const reviewSummary = computed(() => boundApi.value?.reviewSummary?.value ?? null);
+  const reviewsLoading = computed(() => boundApi.value?.resources?.reviews.loading.value ?? false);
+  const reviewsLoaded = computed(() => boundApi.value?.resources?.reviews.loaded.value ?? false);
+  const reviewsLoadError = computed(() => boundApi.value?.resources?.reviews.error.value ? '复习记录暂时没有读到，请刷新重试。' : null);
+  const reviewPending = computed(() => reviewSubmission.value !== null);
+  const practicePending = computed(() => practiceSubmission.value !== null && practiceFeedback.value === null);
+
+  const sameReview = (left: ReviewItemDto, right: ReviewItemDto) => left.id === right.id && left.knowledgeId === right.knowledgeId
+    && left.dueAt === right.dueAt && left.schedulerVersion === right.schedulerVersion && left.intervalDays === right.intervalDays
+    && left.timezoneSnapshot === right.timezoneSnapshot && left.status === right.status;
+  // updatedAt also changes for this completion's mastery counters; the body
+  // and creation identity remain stable across an accepted-but-lost receipt.
+  const sameKnowledge = (left: KnowledgeContent, right: KnowledgeContent) => left.id === right.id
+    && left.concept === right.concept && left.sourceStatus === right.sourceStatus && left.createdAt === right.createdAt;
+
+  async function openReview(item: ReviewItemDto) {
+    if (reviewBusy.value || reviewSubmission.value) return;
+    const owner = requireApi();
+    const revision = ++reviewReadRevision;
+    selectedReview.value = {...item};
+    reviewKnowledge.value = null;
+    reviewReceipt.value = null;
+    reviewLoading.value = true;
+    reviewError.value = null;
+    try {
+      const knowledge = await owner.getKnowledgeItem(item.knowledgeId);
+      if (boundApi.value !== owner || revision !== reviewReadRevision) return;
+      const current = owner.dueReviews.value.find(candidate => candidate.id === item.id);
+      if (!current || !sameReview(current, item) || knowledge.id !== item.knowledgeId) {
+        reviewError.value = '这条复习记录已变化，请刷新后重新打开。';
+        return;
+      }
+      reviewKnowledge.value = knowledge;
+    } catch {
+      if (boundApi.value === owner && revision === reviewReadRevision) reviewError.value = '知识内容暂时不可用，请刷新后再复习。';
+    } finally {
+      if (boundApi.value === owner && revision === reviewReadRevision) reviewLoading.value = false;
+    }
+  }
+
+  async function refreshReviews() {
+    if (reviewBusy.value) return;
+    const owner = boundApi.value;
+    if (!owner) { reviewError.value = '学习服务暂时不可用，请稍后重新打开。'; return; }
+    const original = selectedReview.value;
+    const revision = ++reviewReadRevision;
+    reviewLoading.value = false;
+    reviewKnowledge.value = null;
+    reviewError.value = null;
+    try {
+      await owner.loadReviews();
+      if (boundApi.value !== owner || revision !== reviewReadRevision || !original) return;
+      if (reviewSubmission.value) {
+        const pending = reviewSubmission.value;
+        const knowledge = await owner.getKnowledgeItem(pending.item.knowledgeId);
+        if (boundApi.value !== owner || revision !== reviewReadRevision || reviewSubmission.value !== pending) return;
+        if (sameKnowledge(knowledge, pending.knowledge)) reviewKnowledge.value = knowledge;
+        else reviewError.value = '知识内容已变化，本次自评结果仍需核对。';
+      } else {
+        const current = owner.dueReviews.value.find(item => item.id === original.id);
+        if (current) await openReview(current);
+        else selectedReview.value = null;
+      }
+    } catch {
+      if (boundApi.value === owner && revision === reviewReadRevision) reviewError.value = '复习记录或知识内容暂时不可用，请刷新重试。';
+    }
+  }
+
+  async function completeSelectedReview(isCorrect: boolean) {
+    if (reviewBusy.value || reviewLoading.value || !selectedReview.value || (!reviewKnowledge.value && !reviewSubmission.value)) return;
+    const owner = requireApi();
+    const item = selectedReview.value;
+    const displayedKnowledge = reviewKnowledge.value;
+    reviewBusy.value = true;
+    reviewError.value = null;
+    try {
+      const existing = reviewSubmission.value;
+      if (existing && (existing.owner !== owner || !sameReview(existing.item, item))) return;
+      // A new choice is made only against the current row and content. A retry
+      // retains its original row, choice and instance-captured time zone.
+      if (!existing) {
+        await owner.loadReviews();
+        if (boundApi.value !== owner) return;
+        const current = owner.dueReviews.value.find(candidate => candidate.id === item.id);
+        if (!current || !sameReview(current, item)) {
+          reviewKnowledge.value = null;
+          reviewError.value = '这条复习记录已变化，请刷新后重新打开。';
+          return;
+        }
+      }
+      const knowledge = await owner.getKnowledgeItem(item.knowledgeId);
+      if (boundApi.value !== owner) return;
+      const expectedKnowledge = existing?.knowledge ?? displayedKnowledge;
+      if (!expectedKnowledge || knowledge.id !== item.knowledgeId || !sameKnowledge(knowledge, expectedKnowledge)) {
+        reviewKnowledge.value = existing ? null : knowledge;
+        reviewError.value = '知识内容已变化，请核对后再记录自评。';
+        return;
+      }
+      const submission = existing ?? {owner, item: {...item}, isCorrect, knowledge: {id: knowledge.id, concept: knowledge.concept, sourceStatus: knowledge.sourceStatus, createdAt: knowledge.createdAt}};
+      reviewSubmission.value = submission;
+      const result = await owner.completeReview(submission.item.id, submission.isCorrect);
+      if (boundApi.value !== owner || reviewSubmission.value !== submission) return;
+      if (result.completed.knowledgeId !== submission.item.knowledgeId) throw new Error('Review knowledge identity mismatch');
+      reviewReceipt.value = {result, isCorrect: submission.isCorrect};
+      reviewSubmission.value = null;
+      selectedReview.value = null;
+      reviewKnowledge.value = null;
+    } catch {
+      if (boundApi.value === owner) {
+        reviewKnowledge.value = null;
+        reviewError.value = reviewSubmission.value ? '本次自评结果尚未确认。请刷新知识内容后重试原自评。' : '复习记录或知识内容暂时不可用，请刷新重试。';
+      }
+    } finally { if (boundApi.value === owner) reviewBusy.value = false; }
+  }
+
+  function ignoreReview(item: ReviewItemDto) {
+    if (reviewBusy.value || reviewSubmission.value) return;
+    ignoredReviewIds.value = [...ignoredReviewIds.value, item.id];
+    if (selectedReview.value?.id === item.id) {
+      reviewReadRevision++;
+      selectedReview.value = null;
+      reviewKnowledge.value = null;
+      reviewLoading.value = false;
+    }
+  }
+
+  function reviewDate(value: string, timeZone?: string) {
+    try { return new Intl.DateTimeFormat('zh-CN', {dateStyle: 'medium', timeStyle: 'short', ...(timeZone ? {timeZone} : {})}).format(new Date(value)); }
+    catch { return value; }
+  }
 
   const activeMistakeCount = computed(() => mistakes.value.filter((item) => item.status === 'active').length);
   const currentPracticeQuestion = computed(() => practiceSession.value?.items[practiceIndex.value] ?? null);
@@ -151,29 +305,31 @@ function bindApi(api: FocusLearningApi | null): void {
     if (!practiceSession.value || !question || !answer || practiceBusy.value) return;
     practiceBusy.value = true;
     practiceError.value = null;
+    const owner = requireApi();
     try {
-      const elapsedSeconds = Math.max(1, Math.round((Date.now() - questionStartTime.value) / 1000));
       const existing = practiceSubmission.value;
-      const submission = existing?.sessionId === practiceSession.value.sessionId && existing.questionId === question.id && existing.answer === answer
-        ? existing
-        : { sessionId: practiceSession.value.sessionId, questionId: question.id, answer, idempotencyKey: `attempt_${crypto.randomUUID()}` };
+      if (existing && (existing.sessionId !== practiceSession.value.sessionId || existing.questionId !== question.id)) return;
+      const submission = existing ?? { sessionId: practiceSession.value.sessionId, questionId: question.id, answer,
+        idempotencyKey: `attempt_${crypto.randomUUID()}`, elapsedSeconds: Math.max(1, Math.round((Date.now() - questionStartTime.value) / 1000)), hintsUsed: 0 };
       practiceSubmission.value = submission;
-      practiceFeedback.value = await requireApi().submitPracticeAnswer(
+      const feedback = await owner.submitPracticeAnswer(
         submission.sessionId,
         submission.questionId,
         submission.answer,
         submission.idempotencyKey,
-        elapsedSeconds,
+        submission.elapsedSeconds,
+        submission.hintsUsed,
       );
+      if (boundApi.value === owner) practiceFeedback.value = feedback;
     } catch {
-      practiceError.value = '作答没有保存，请重试。';
+      if (boundApi.value === owner) practiceError.value = '本次作答结果尚未确认，请重试提交同一答案。';
     } finally {
-      practiceBusy.value = false;
+      if (boundApi.value === owner) practiceBusy.value = false;
     }
   }
 
   async function finishPractice() {
-    if (!practiceSession.value) return;
+    if (!practiceSession.value || practiceBusy.value || practicePending.value) return;
     practiceBusy.value = true;
     practiceError.value = null;
     try {
@@ -189,7 +345,7 @@ function bindApi(api: FocusLearningApi | null): void {
   }
 
   function nextPracticeQuestion() {
-    if (!practiceSession.value) return;
+    if (!practiceSession.value || practiceBusy.value || practicePending.value) return;
     if (practiceIndex.value + 1 >= practiceSession.value.items.length) {
       practiceReadyToComplete.value = true;
       return;
@@ -202,6 +358,7 @@ function bindApi(api: FocusLearningApi | null): void {
   }
 
   async function startMistakePractice() {
+    if (practiceBusy.value || practicePending.value) return;
     const activeIds = mistakes.value.filter((item) => item.status === 'active').map((item) => item.questionId);
     const questionIds = (selectedMistakeIds.value.length ? selectedMistakeIds.value : activeIds).slice(0, 5);
     if (!questionIds.length) {
@@ -306,7 +463,7 @@ function bindApi(api: FocusLearningApi | null): void {
   }
 
   async function reloadLearning() {
-    await Promise.allSettled([requireApi().loadMistakes(), requireApi().loadPlans(), requireApi().loadPractice()]);
+    await Promise.allSettled([requireApi().loadMistakes(), requireApi().loadPlans(), requireApi().loadPractice(), refreshReviews()]);
   }
 
   return {
@@ -316,6 +473,9 @@ function bindApi(api: FocusLearningApi | null): void {
     learningPlans,
     apiError,
     reloadLearning,
+    dueReviews, visibleReviews, completedReviews, reviewSummary, reviewsLoading, reviewsLoaded, reviewsLoadError,
+    selectedReview, reviewKnowledge, reviewReceipt, reviewLoading, reviewBusy, reviewError, reviewPending,
+    refreshReviews, openReview, completeSelectedReview, ignoreReview, reviewDate,
     // 错题
     activeMistakeCount,
     visibleMistakes,
@@ -338,6 +498,7 @@ function bindApi(api: FocusLearningApi | null): void {
     practiceReport,
     practiceBusy,
     practiceError,
+    practicePending,
     currentPracticeQuestion,
     submitPracticeAnswer,
     finishPractice,

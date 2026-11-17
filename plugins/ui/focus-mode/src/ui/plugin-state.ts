@@ -9,7 +9,7 @@
  * 本文件位于插件自有目录，S6 将随插件 UI 一并迁至 `plugins/plugins/ui/focus-mode/src/ui/`。
  */
 import { effectScope, ref, watch, type Component } from 'vue';
-import { BookOpen, Puzzle } from 'lucide-vue-next';
+import { BookOpen, Puzzle, RotateCcw } from 'lucide-vue-next';
 import { useUIPluginContext, type UIPluginContext } from '@aervox/ui/plugin-api';
 
 /** 插件 id（与 Manifest / 服务端注册单元一致；仅本插件内部使用） */
@@ -17,11 +17,12 @@ export const PLUGIN_ID = 'ap-ui-focus-mode';
 
 /** 学习抽屉导航清单（插件自有视图入口） */
 export const learningNavItems: Array<{
-  id: 'study' | 'mistake';
+  id: 'study' | 'mistake' | 'review';
   label: string;
   description: string;
   icon: Component;
 }> = [
+  { id: 'review', label: '今日复习', description: '知识内容、自评与下次日期', icon: RotateCcw },
   { id: 'study', label: '学习规划', description: 'AI 生成学习路线图', icon: BookOpen },
   { id: 'mistake', label: '错题本', description: '针对性重练未掌握题', icon: Puzzle },
 ];
@@ -74,7 +75,7 @@ const focusModeEnabled = ref(false);
 
 /** 学习抽屉状态（插件自有视图，不再占用宿主 ToolId） */
 const learningOpen = ref(false);
-const activeLearningView = ref<'study' | 'mistake'>('study');
+const activeLearningView = ref<'study' | 'mistake' | 'review'>('study');
 
 
   const scope = effectScope(true);
@@ -106,7 +107,7 @@ const activeLearningView = ref<'study' | 'mistake'>('study');
   }
   function setFocusModeEnabled(enabled: boolean) { if (!disposed) focusModeEnabled.value = enabled; }
   function toggleFocusMode() { setFocusModeEnabled(!focusModeEnabled.value); }
-  function openLearningView(view: 'study' | 'mistake') {
+  function openLearningView(view: 'study' | 'mistake' | 'review') {
     if (disposed) return;
     activeLearningView.value = view;
     learningOpen.value = true;
