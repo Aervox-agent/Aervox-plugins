@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
-import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils';
+import { DOMWrapper, enableAutoUnmount, flushPromises, mount } from '@vue/test-utils';
 import { UISurfaceHost } from '@aervox/ui-host';
 import { AervoxHttpError, configureAervoxClient, setSessionId, type StreamTurnOptions, type TurnCallbacks } from '@aervox/api-client';
 import definition from '../src';
@@ -1438,7 +1438,7 @@ it.each([false, true])('keeps the injected learning instance and its local draft
     await flushPromises();
     const today = material3 ? [...document.querySelectorAll('md-dialog[aria-label="今日"]')].at(-1)! : document;
     const entry = [...today.querySelectorAll<HTMLButtonElement>('button.pc-home-entry')].filter(button => button.textContent?.includes('学习与复习')).at(-1);
-    expect(entry).toBeDefined(); entry!.click(); await flushPromises();
+    expect(entry).toBeDefined(); await new DOMWrapper(entry!).trigger('click'); await flushPromises();
   };
   await open();
   const original = wrapper.getComponent(Panel).vm;
