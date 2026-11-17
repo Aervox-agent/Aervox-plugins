@@ -13,10 +13,10 @@ import { useUISurfaceContext } from '@aervox/ui-host';
 import { useMaterial3 } from '@aervox/ui/material3';
 import { AervoxDialog, ExtensionSlot } from '@aervox/ui/primitives';
 import { AervoxBrandMark, CompanionAvatar, UserQuestionComposer, getQuestionSubmissionIssue, isSameOriginalQuestion, readCompanionIdentity, useSessionDraft, useCompanionAvatarBinding, type QuestionSubmissionIssue } from '@aervox/ui/companion';
-import { AervoxHttpError, createConversationController, getClientTransport, useAervoxApi, useAervoxPlugins, useAervoxSessions } from '@aervox/api-client';
+import { AervoxHttpError, createConversationController, getClientTransport, useAervoxApi, useAervoxPlugins, useAervoxSessions, type SessionDeletionSelection } from '@aervox/api-client';
 import { createUIRegistry, provideUIRegistry, createWorkbenchPluginRuntime, createPluginEventBus, createPluginStateStore, provideUIPluginContext, resolveOutgoingMessage, type BuiltinUIPlugin, type UIPluginContext } from '@aervox/ui/plugin-api';
 import { ArrowUpRight, BookOpen, Copy, History, Mic, Paperclip, RotateCcw, Settings, Square, Volume2, X } from 'lucide-vue-next';
-import type { AskUserQuestionAnswerItem, UserQuestionRequiredEventData } from '@aervox/contracts';
+import type { AskUserQuestionAnswerItem, SessionItem, UserQuestionRequiredEventData } from '@aervox/contracts';
 import { useDialogueTyper } from './dialogue-typer';
 import MobileSettingsDialog from './MobileSettingsDialog.vue';
 import MobileSessionsDialog from './MobileSessionsDialog.vue';
@@ -74,6 +74,9 @@ const sessionCreationError = ref('');
 const sessionListError = ref<string | null>(null);
 const sessionManaging = ref(false);
 const sessionManageError = ref<string | null>(null);
+// These original targets survive filtering, paging and list refreshes. They are
+// UI intent only; their presence is never a durable deletion receipt.
+const pendingSessionDeletes = ref<SessionItem[]>([]);
 // A stale management failure should not greet the next opening of the list.
 watch(sessionsOpen, open => { if (open) sessionManageError.value = null; });
 const mobileSessionTitle = computed(() => sessions.activeSession.value?.title ?? (!sessionsReady.value ? '正在读取会话…'
@@ -854,15 +857,25 @@ async function renameMobileSession(id: string, title: string) {
     if (error instanceof AervoxHttpError && error.status === 404) await refreshMobileSessions();
   } finally { sessionManaging.value = false; }
 }
-function clearDeletedSessionDrafts(id: string) {
+function clearDeletedSessionDrafts(id: string, isCurrent: () => boolean = () => true): boolean {
+  if (!isCurrent()) return false;
   attachmentCache.delete(id);
   try {
     const target = props.draftStorage ?? (typeof localStorage === 'undefined' ? undefined : localStorage);
     // Use the acknowledged deleted identity: the session hook may already have
     // selected a replacement, whose text and attachment must stay intact.
+    if (!isCurrent()) return false;
     target?.removeItem(`aervox-mobile-draft:${encodeURIComponent(id)}`);
+    if (!isCurrent()) return false;
     target?.removeItem(`aervox-mobile-draft:attachment-${id}`);
   } catch { /* Native storage exposes its persistence failure through the host. */ }
+  return isCurrent();
+}
+function presentDeletionSelection(selection: SessionDeletionSelection, message: string) {
+  if (surface.signal.aborted || !selection.isCurrent()) return;
+  resetMobilePresentation();
+  // Reset observers can select another owner reentrantly. Its view stays intact.
+  if (!surface.signal.aborted && selection.isCurrent()) say(message, '会话管理');
 }
 async function deleteMobileSession(id: string) {
   if (sessionManaging.value) return;
@@ -880,24 +893,60 @@ async function deleteMobileSession(id: string) {
   const draft = wasActive ? whisperText.value : '';
   // Whether a replacement conversation survives decides the reported destination.
   const remaining = sessions.sessions.value.filter(item => item.id !== id).length;
+  let transfer: SessionDeletionSelection | undefined;
   sessionManaging.value = true; sessionManageError.value = null; sessionFeedback.value = ''; sessionCreationError.value = '';
   try {
-    await sessions.deleteSession(id);
+    await sessions.deleteSession(id, { onSelectionTransfer: selection => {
+      transfer = selection;
+      presentDeletionSelection(selection, selection.sessionId
+        ? '会话已删除。当前对话已准备好，可以继续或回看记录。'
+        : '会话已删除。可以选择其他会话，或开始新的对话。');
+    } });
     clearDeletedSessionDrafts(id);
+    pendingSessionDeletes.value = pendingSessionDeletes.value.filter(item => item.id !== id);
     if (surface.signal.aborted) return;
-    if (wasActive) {
-      resetMobilePresentation();
-      say(remaining
-        ? '已删除当前会话。可以在会话列表里继续选择，或直接开始新的对话。'
-        : '已删除当前会话。新的对话已准备好。', '会话已删除');
-    }
-    sessionFeedback.value = wasActive
-      ? (draft ? '当前会话已删除，未发送的草稿一并清除。' : remaining ? '当前会话已删除，已切换到其他会话。' : '当前会话已删除，新的对话已准备好。')
+    sessionFeedback.value = wasActive && transfer?.isCurrent()
+      ? (draft ? '当前会话已删除，未发送的草稿一并清除。' : remaining ? '当前会话已删除，已切换到其他会话。' : transfer.sessionId ? '当前会话已删除，新的对话已准备好。' : '当前会话已删除，可以选择或新建对话。')
       : `已删除「${target.title}」。`;
   } catch (error) {
     if (surface.signal.aborted) return;
-    sessionManageError.value = sessionFailure(error, '删除结果未能确认，列表保持不变。可以刷新后重试。');
-    if (error instanceof AervoxHttpError && error.status === 404) await refreshMobileSessions();
+    const refused = error instanceof AervoxHttpError && [400, 401, 403, 409, 413, 422, 429].includes(error.status);
+    if (!refused || pendingSessionDeletes.value.some(item => item.id === id)) {
+      if (!pendingSessionDeletes.value.some(item => item.id === id)) pendingSessionDeletes.value = [...pendingSessionDeletes.value, { ...target }];
+      sessionManageError.value = '删除结果未能确认，已保留会话视图和草稿。请检查删除结果；不会自动再次删除。';
+    } else sessionManageError.value = sessionFailure(error, '删除请求被拒绝，已保留会话视图和草稿。');
+  } finally { sessionManaging.value = false; }
+}
+async function checkMobileSessionDeletion(id: string) {
+  const target = pendingSessionDeletes.value.find(item => item.id === id);
+  if (!target || sessionManaging.value) return;
+  sessionManaging.value = true; sessionManageError.value = null; sessionFeedback.value = '';
+  try {
+    const result = await sessions.checkSessionDeletion(id, { onAbsenceConfirmed: observationCurrent => {
+      const isCurrent = () => !surface.signal.aborted && observationCurrent()
+        && pendingSessionDeletes.value.find(item => item.id === id) === target;
+      if (!isCurrent()) throw new Error('SESSION_DELETE_CHECK_OBSERVATION_RETIRED');
+      // The draft helper saves the previous input synchronously on selection.
+      // Retire that owned input before a confirmed absence can transfer selection.
+      if (sessions.activeSessionId.value === id) {
+        whisperText.value = '';
+        if (!isCurrent()) throw new Error('SESSION_DELETE_CHECK_OBSERVATION_RETIRED');
+        attachment.value = null;
+      }
+      if (!clearDeletedSessionDrafts(id, isCurrent)) throw new Error('SESSION_DELETE_CHECK_OBSERVATION_RETIRED');
+      pendingSessionDeletes.value = pendingSessionDeletes.value.filter(item => item !== target);
+      if (historySessionId.value === id) historyOpen.value = false;
+    }, onSelectionTransfer: selection => {
+      presentDeletionSelection(selection, '已确认该会话不存在。可以选择其他会话，或开始新的对话。');
+    } });
+    if (result === 'missing') {
+      if (surface.signal.aborted) return;
+      sessionFeedback.value = `已确认「${target.title}」不存在，原会话的草稿已清除。可以选择其他会话或新建对话。`;
+    } else if (!surface.signal.aborted) {
+      sessionManageError.value = '检查发现仍有会话，之前的删除结果尚未确认。如仍需删除，请重新确认列表中的当前会话。';
+    }
+  } catch {
+    if (!surface.signal.aborted) sessionManageError.value = '删除结果仍未确认，已保留原目标和草稿。可以再次检查；不会自动再次删除。';
   } finally { sessionManaging.value = false; }
 }
 
@@ -1144,9 +1193,9 @@ onBeforeUnmount(() => {
     </aside>
     <MobileSessionsDialog v-model="sessionsOpen" :sessions="sessions.sessions.value" :active-session-id="sessions.activeSessionId.value"
       :has-more="sessions.hasMore.value" :loading="sessions.loading.value" :error="sessionListError" :notice="sessionCreationError || sessionFeedback" :changing="sessionChanging" :switch-locked="sessionSwitchLocked" :lock-reason="switchLockReason"
-      :managing="sessionManaging" :manage-error="sessionManageError"
+      :managing="sessionManaging" :manage-error="sessionManageError" :pending-deletes="pendingSessionDeletes"
       @refresh="refreshMobileSessions" @more="loadMoreSessions" @new="createMobileSession" @select="selectMobileSession" @history="session => openMobileHistory(session.id, session.title)"
-      @rename="renameMobileSession" @delete="deleteMobileSession" />
+      @rename="renameMobileSession" @delete="deleteMobileSession" @check-delete="checkMobileSessionDeletion" />
     <MobileHistoryDialog v-model="historyOpen" :session-id="historySessionId" :title="historyTitle" />
     <AervoxDialog v-model="todayOpen" title="今日" :destroy-on-close="false" body-max-height="calc(100dvh - 180px)">
       <p>从已有学习记录或日记继续。打开入口不会发送消息。</p>
