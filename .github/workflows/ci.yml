@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 env:
-  # This public PostgreSQL integration includes the matching root lock, current contracts and reviewed safety fixes.
-  HOST_COMMIT: ${{ inputs.host_commit || '3650c3b88aac9602f79becd1710733e7cdf87d3a' }}
+  # This host includes the shared first-run model status, identity save and avatar preview contracts.
+  HOST_COMMIT: ${{ inputs.host_commit || '96c6997336d92af6d3118ffd4fbe807ef5533bb1' }}
 
 jobs:
   integration:
