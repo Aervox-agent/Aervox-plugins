@@ -16,8 +16,8 @@ permissions:
   contents: read
 
 env:
-  # This host includes the shared first-run model status, identity save and avatar preview contracts.
-  HOST_COMMIT: ${{ inputs.host_commit || '96c6997336d92af6d3118ffd4fbe807ef5533bb1' }}
+  # This host includes shared first-run setup and the matching guarded deletion recovery client.
+  HOST_COMMIT: ${{ inputs.host_commit || 'f8f4b0b9f2ae0bf334cab2a3e632df763d6ba797' }}
 
 jobs:
   integration:
