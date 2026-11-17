@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch, type Component } from 'vue';
 import { useMaterial3 } from '@aervox/ui/material3';
+import { CompanionAvatar, useCompanionAvatarBinding } from '@aervox/ui/companion';
 import {
   readCompanionIdentity,
   type Platform,
-  PetWithFallback,
   createWorkbenchPluginRuntime,
   type BuiltinUIPlugin,
   WorkbenchHeader,
@@ -58,6 +58,7 @@ import type { TurnCallbacks } from '@aervox/api-client';
 import type { TurnAttachmentRef } from '@aervox/contracts';
 
 const surfaceContext = useUISurfaceContext();
+const avatarBinding = useCompanionAvatarBinding();
 const desktopProactiveBridge = proactiveBridge();
 
 const material3 = useMaterial3();
@@ -791,7 +792,7 @@ onUnmounted(() => {
     <template v-else>
       <div class="companion-stage">
         <div v-if="layout.showCompanionEnabled.value" class="immersive-pet" aria-label="桌宠区域">
-          <PetWithFallback />
+          <CompanionAvatar :model="avatarBinding.model.value" :binding-state="avatarBinding.state.value" @retry-binding="avatarBinding.refresh" />
         </div>
         <WorkbenchSideCards />
       </div>

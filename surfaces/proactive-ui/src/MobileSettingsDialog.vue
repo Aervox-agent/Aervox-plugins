@@ -29,6 +29,10 @@ function selectMaterialTab(event: Event) {
   const item = available.value[index];
   if (item) selected.value = item.id;
 }
+function selectCategory(category: string) {
+  if (available.value.some(item => item.id === category)) selected.value = category;
+}
+defineExpose({ selectCategory });
 </script>
 
 <template>

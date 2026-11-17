@@ -2,13 +2,14 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils';
 import { defineComponent, ref } from 'vue';
 import { material3ContextKey } from '@aervox/ui/material3';
-import type { PersonaDto } from '@aervox/api-client';
+import type { PersonaDto, ActivePersonaSelectionDto } from '@aervox/api-client';
 import PersonaManagerPanel from '../src/persona/PersonaManagerPanel.vue';
 import PersonaEditDialog from '../src/persona/PersonaEditDialog.vue';
 
 const calls = vi.hoisted(() => ({
   loadPersonas: vi.fn(), loadAvailableTools: vi.fn(), loadAvailableSkills: vi.fn(), getPersonaDetail: vi.fn(),
   updatePersona: vi.fn(), createPersona: vi.fn(), success: vi.fn(), error: vi.fn(), warning: vi.fn(),
+  activatePersona: vi.fn(),
 }));
 const persona: PersonaDto = {
   id: 'persona-a', workspaceId: 'local', subjectUserId: 'local', name: '角色 A', description: '',
@@ -16,9 +17,10 @@ const persona: PersonaDto = {
   currentRevisionId: 'revision-a', createdAt: '2026-10-29T00:00:00.000Z', updatedAt: '2026-10-29T00:00:00.000Z',
 };
 const personas = ref([persona]);
+const activePersona = ref<ActivePersonaSelectionDto | null>(null);
 vi.mock('@aervox/api-client', async original => ({
   ...await original<typeof import('@aervox/api-client')>(),
-  useAervoxPersonas: () => ({ ...calls, personas, activePersona: ref(null), loading: ref(false), error: ref(null) }),
+  useAervoxPersonas: () => ({ ...calls, personas, activePersona, loading: ref(false), error: ref(null) }),
 }));
 vi.mock('@aervox/ui/utils/element', async original => ({
   ...await original<typeof import('@aervox/ui/utils/element')>(),
@@ -31,19 +33,22 @@ const Dialog = defineComponent({
   template: '<section v-if="modelValue" data-editor><slot /><slot name="footer" /></section>',
 });
 const Button = defineComponent({ name: 'AervoxButton', template: '<button><slot /></button>' });
+const Dropdown = defineComponent({ name: 'ElDropdown', template: '<div><slot /><slot name="dropdown" /></div>' });
 enableAutoUnmount(afterEach);
 beforeEach(() => {
   vi.clearAllMocks();
+  personas.value = [persona]; activePersona.value = null;
   calls.loadPersonas.mockResolvedValue(undefined);
   calls.loadAvailableTools.mockResolvedValue([]);
   calls.loadAvailableSkills.mockResolvedValue([]);
   calls.getPersonaDetail.mockResolvedValue({ persona, revision: { revision: 1, config: { systemPromptAppend: 'Original prompt' } } });
   calls.updatePersona.mockResolvedValue({});
   calls.createPersona.mockResolvedValue({});
+  calls.activatePersona.mockResolvedValue(undefined);
 });
 const manager = (mobile = true) => mount(PersonaManagerPanel, { global: {
   provide: { [material3ContextKey as symbol]: mobile },
-  stubs: { AervoxDialog: Dialog, AervoxButton: Button, VoiceAbilityCard: true, ElDropdown: true, ElDropdownMenu: true, ElDropdownItem: true },
+  stubs: { AervoxDialog: Dialog, AervoxButton: Button, VoiceAbilityCard: true, ElDropdown: Dropdown, ElDropdownMenu: Dropdown, ElDropdownItem: Button },
 } });
 async function openEditor(wrapper: ReturnType<typeof manager>) {
   // The desktop entry is in a native dropdown; both hosts use the same actual parent opening handler.
@@ -113,4 +118,46 @@ it('preserves desktop toast feedback for closed load failures and saves', async 
   expect(editor.props('open')).toBe(false);
   expect(calls.success).toHaveBeenCalledWith('人格已更新');
   expect(wrapper.find('.settings-inline-notice').exists()).toBe(false);
+});
+
+const currentSelection = { workspaceId: 'local', subjectUserId: 'local', personaId: persona.id,
+  revisionId: persona.currentRevisionId, selectedAt: '2026-11-06T00:00:00.000Z' } satisfies ActivePersonaSelectionDto;
+
+it.each([false, true])('keeps the active revision when editing a Live2D binding and exposes an explicit latest-revision action (mobile=%s)', async mobile => {
+  activePersona.value = {...currentSelection};
+  calls.updatePersona.mockImplementation(async () => {
+    personas.value = [{...persona, currentRevisionId: 'new-revision'}];
+    return {};
+  });
+  const wrapper = manager(mobile);
+  const editor = await openEditor(wrapper);
+  await editor.get('#persona-live2d-model').setValue('mizuki-default');
+  await saveEditor(editor);
+  expect(calls.updatePersona).toHaveBeenCalledWith(persona.id, expect.objectContaining({
+    config: expect.objectContaining({ systemPromptAppend: 'Original prompt', live2dModelId: 'mizuki-default' }),
+  }));
+  expect(activePersona.value?.revisionId).toBe(persona.currentRevisionId);
+  expect(calls.activatePersona).not.toHaveBeenCalled();
+  expect(wrapper.get('.persona-revision-notice').text()).toContain('有更新待启用');
+  calls.activatePersona.mockImplementation(async (_id, revisionId) => {
+    activePersona.value = {...currentSelection, revisionId};
+  });
+  await wrapper.findAll('button').find(button => button.text() === '启用最新修订')!.trigger('click');
+  await flushPromises();
+  expect(calls.activatePersona).toHaveBeenCalledWith(persona.id, 'new-revision');
+  expect(activePersona.value?.revisionId).toBe('new-revision');
+  expect(wrapper.find('.persona-revision-notice').exists()).toBe(false);
+});
+
+it('keeps the prior activation and latest-revision action visible when activation fails', async () => {
+  activePersona.value = {...currentSelection};
+  personas.value = [{...persona, currentRevisionId: 'new-revision'}];
+  calls.activatePersona.mockRejectedValueOnce(new Error('切换暂不可用'));
+  const wrapper = manager(); await flushPromises();
+  await wrapper.findAll('button').find(button => button.text() === '启用最新修订')!.trigger('click');
+  await flushPromises();
+  expect(activePersona.value?.revisionId).toBe(persona.currentRevisionId);
+  expect(wrapper.get('.persona-revision-notice').text()).toContain('有更新待启用');
+  expect(wrapper.get('.persona-manager > [role="alert"]').text()).toContain('切换暂不可用');
+  expect(wrapper.findAll('button').find(button => button.text() === '启用最新修订')).toBeDefined();
 });

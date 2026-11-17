@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import {ChevronDown, ChevronUp, Hand, Smile, X} from 'lucide-vue-next'
 import {computed, onBeforeUnmount, onMounted, ref, shallowRef} from 'vue'
-import {PetWithFallback, UserQuestionComposer} from '@aervox/ui/companion'
+import {CompanionAvatar, UserQuestionComposer, getQuestionSubmissionIssue, isSameOriginalQuestion, useCompanionAvatarBinding, type QuestionSubmissionIssue} from '@aervox/ui/companion'
 import {createConversationController, getClientTransport, useAervoxClient} from '@aervox/api-client'
 import type {AskUserQuestionAnswerItem, UserQuestionRequiredEventData} from '@aervox/contracts'
 import {replyBubbleDurationMs, stripMarkdownForBubble} from './quick-chat'
@@ -11,6 +11,7 @@ import './pet.css'
 import '@aervox/ui/theme/companion'
 import {useUISurfaceContext} from '@aervox/ui-host'
 const surfaceContext = useUISurfaceContext()
+const avatarBinding = useCompanionAvatarBinding()
 const client = useAervoxClient()
 const turnController = createConversationController(getClientTransport(), surfaceContext.signal)
 
@@ -18,6 +19,9 @@ const bubbleText = ref('')
 const turnState = shallowRef(turnController.state)
 const unsubscribeTurn = turnController.subscribe(state => { turnState.value = state })
 const activeQuestion = computed(() => turnState.value.question)
+const questionSubmissionFailure = shallowRef<{ question: UserQuestionRequiredEventData; issue: QuestionSubmissionIssue }>()
+const questionSubmissionIssue = computed(() => isSameOriginalQuestion(questionSubmissionFailure.value?.question, activeQuestion.value)
+    ? questionSubmissionFailure.value?.issue : undefined)
 const pendingApproval = computed(() => turnState.value.approval)
 const interactionBusy = ref(false)
 const turnFeedback = ref('')
@@ -177,16 +181,23 @@ async function decidePetApproval(decision: 'granted' | 'denied') {
 }
 
 async function answerPetQuestion(answers: AskUserQuestionAnswerItem[]) {
-    if (!activeQuestion.value || interactionBusy.value) return
+    const question = activeQuestion.value
+    if (!question || interactionBusy.value) return
     interactionBusy.value = true
     turnFeedback.value = ''
     try {
         await turnController.answer(answers)
+        if (surfaceContext.signal.aborted) return
+        if (isSameOriginalQuestion(question, questionSubmissionFailure.value?.question)) questionSubmissionFailure.value = undefined
         if (!turnController.state.question) {
             window.aervoxLive2D?.playMotion('w-normal-nod01')
             showStreamingBubble(replyRaw ? stripMarkdownForBubble(replyRaw) : '已提交回答，等待回复…')
         }
-    } catch { turnFeedback.value = '回答提交失败，请重试。' }
+    } catch (error) {
+        if (!surfaceContext.signal.aborted && isSameOriginalQuestion(question, activeQuestion.value)) {
+            questionSubmissionFailure.value = { question, issue: getQuestionSubmissionIssue(error) }
+        }
+    }
     finally { interactionBusy.value = false }
 }
 
@@ -268,13 +279,13 @@ onBeforeUnmount(() => {
           <button type="button" :disabled="quickChatPending" @click.stop="decidePetApproval('denied')">拒绝</button>
         </div>
         <div v-if="activeQuestion" class="pet-question" @click.stop>
-          <UserQuestionComposer :question-data="activeQuestion" :submitting="interactionBusy" @submit="answerPetQuestion" />
+          <UserQuestionComposer :question-data="activeQuestion" :submitting="interactionBusy" :submission-issue="questionSubmissionIssue" @submit="answerPetQuestion" />
         </div>
       </section>
     </transition>
     <div class="pet-stage">
       <div class="pet-character">
-        <PetWithFallback @on-speak="onSpeak" />
+        <CompanionAvatar :model="avatarBinding.model.value" :binding-state="avatarBinding.state.value" @retry-binding="avatarBinding.refresh" @on-speak="onSpeak" />
       </div>
     </div>
     <!-- 底部常驻条：快捷输入 + 展开/收起按钮；功能坞向上展开 -->
