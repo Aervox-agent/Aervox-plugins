@@ -17,7 +17,7 @@ permissions:
 
 env:
   # This host validates shared setup, deletion ownership and the full campus schedule consumers.
-  HOST_COMMIT: ${{ inputs.host_commit || '775ec3248d0b7e8610cd60a58e8b706a0c1f782b' }}
+  HOST_COMMIT: ${{ inputs.host_commit || 'aa40550494eb4faeaae822b61dc9680d76a04744' }}
 
 jobs:
   integration:
