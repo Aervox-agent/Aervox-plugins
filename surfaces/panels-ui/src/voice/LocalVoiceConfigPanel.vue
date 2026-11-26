@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { AervoxSwitch, AervoxSettingsHeading, AervoxButton } from '@aervox/ui/primitives';
 import {computed, onMounted, ref} from 'vue'
+import {PREVIEW_TEXT, useVoicePanelFeedback} from './useVoicePanelFeedback'
 import {Check, Download, FolderOpen, Loader2, Mic, Play, RotateCcw, Volume2} from 'lucide-vue-next'
 import {
   useAervoxVoice,
@@ -19,15 +20,12 @@ const inputConfig = ref<VoiceInputConfigDto | null>(null)
 const modelStatus = ref<VoiceInputModelStatusDto | null>(null)
 const voices = ref<VoiceModelDto[]>([])
 const loading = ref(true)
-const saving = ref(false)
-const savedFlash = ref(false)
+const { saving, savedFlash, previewBusy, previewAudio, error, runSave, runPreview } =
+  useVoicePanelFeedback({ save: '保存输出配置失败', preview: '试听合成失败' })
 const savingInput = ref(false)
 const savedInputFlash = ref(false)
 const downloadingModel = ref(false)
 const downloadMessage = ref<string | null>(null)
-const previewBusy = ref(false)
-const previewAudio = ref<string | null>(null)
-const error = ref<string | null>(null)
 const inputError = ref<string | null>(null)
 
 const desktopOnly = computed(() => !api.canPickDirectory())
@@ -157,26 +155,15 @@ async function pickSenseVoiceFolder(): Promise<void> {
 }
 
 async function save(): Promise<void> {
-  saving.value = true
-  error.value = null
-  try {
-    config.value = await api.saveConfig({
-      enabled: draft.value.enabled,
-      providerId: draft.value.providerId,
-      modelPath: draft.value.modelPath || undefined,
-      modelId: draft.value.modelId,
-      speakerId: draft.value.speakerId || undefined,
-      settings: draft.value.settings ?? {},
-    })
-    savedFlash.value = true
-    setTimeout(() => {
-      savedFlash.value = false
-    }, 1600)
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : '保存输出配置失败'
-  } finally {
-    saving.value = false
-  }
+  const saved = await runSave(() => api.saveConfig({
+    enabled: draft.value.enabled,
+    providerId: draft.value.providerId,
+    modelPath: draft.value.modelPath || undefined,
+    modelId: draft.value.modelId,
+    speakerId: draft.value.speakerId || undefined,
+    settings: draft.value.settings ?? {},
+  }))
+  if (saved) config.value = saved
 }
 
 async function saveInput(): Promise<void> {
@@ -206,26 +193,15 @@ async function saveInput(): Promise<void> {
 }
 
 async function preview(): Promise<void> {
-  if (!draft.value.modelId) {
-    error.value = '请先填写模型 ID'
-    return
-  }
-  previewBusy.value = true
-  error.value = null
-  previewAudio.value = null
-  try {
-    const result = await api.synthesize({
+  await runPreview(
+    () => api.synthesize({
       providerId: draft.value.providerId,
       modelId: draft.value.modelId,
       speakerId: draft.value.speakerId || undefined,
-      text: '你好，我是思隅，很高兴与你相遇。',
-    })
-    previewAudio.value = `data:${result.contentType};base64,${result.audioBase64}`
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : '试听合成失败'
-  } finally {
-    previewBusy.value = false
-  }
+      text: PREVIEW_TEXT,
+    }),
+    () => (draft.value.modelId ? null : '请先填写模型 ID'),
+  )
 }
 </script>
 
