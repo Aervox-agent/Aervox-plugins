@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { AervoxSwitch, AervoxSettingsHeading, AervoxButton } from '@aervox/ui/primitives';
 import { computed, onMounted, ref } from 'vue'
+import { PREVIEW_TEXT, useVoicePanelFeedback } from './useVoicePanelFeedback'
 import { Check, Eye, EyeOff, Play, RotateCcw, Volume2, Globe } from 'lucide-vue-next'
 import {
   useAervoxVoice,
@@ -14,14 +15,11 @@ const api = useAervoxVoice()
 const config = ref<RemoteVoiceConfigDto | null>(null)
 const voices = ref<VoiceModelDto[]>([])
 const loading = ref(true)
-const saving = ref(false)
-const savedFlash = ref(false)
+const { saving, savedFlash, previewBusy, previewAudio, error, runSave, runPreview } =
+  useVoicePanelFeedback({ save: '保存在线语音配置失败', preview: '试听合成失败' })
 const showApiKey = ref(false)
 const testBusy = ref(false)
 const testResult = ref<VoiceRemoteTestConnectionResultDto | null>(null)
-const previewBusy = ref(false)
-const previewAudio = ref<string | null>(null)
-const error = ref<string | null>(null)
 
 /** 辅助参考音频的 textarea 视图（每行一条路径） */
 const auxRefText = computed({
@@ -80,22 +78,10 @@ async function loadVoices(): Promise<void> {
 
 /** 试听：使用当前草稿参数请求合成（未保存的参数经 settings 透传即时生效） */
 async function preview(): Promise<void> {
-  if (!draft.value.endpoint?.trim()) {
-    error.value = '请先填写服务地址'
-    return
-  }
-  if (!draft.value.modelId.trim()) {
-    error.value = '请先填写模型 ID'
-    return
-  }
-  previewBusy.value = true
-  error.value = null
-  previewAudio.value = null
-  try {
-    const result = await api.synthesize({
+  await runPreview(() => api.synthesize({
       providerId: draft.value.providerId,
       modelId: draft.value.modelId,
-      text: '你好，我是思隅，很高兴与你相遇。',
+      text: PREVIEW_TEXT,
       settings: {
         textLang: draft.value.textLang ?? 'zh',
         ...(draft.value.refAudioPath ? { refAudioPath: draft.value.refAudioPath } : {}),
@@ -103,13 +89,11 @@ async function preview(): Promise<void> {
         ...(draft.value.promptLang ? { promptLang: draft.value.promptLang } : {}),
         ...(draft.value.speedFactor ? { speedFactor: draft.value.speedFactor } : {}),
       },
+    }), () => {
+      if (!draft.value.endpoint?.trim()) return '请先填写服务地址'
+      if (!draft.value.modelId.trim()) return '请先填写模型 ID'
+      return null
     })
-    previewAudio.value = `data:${result.contentType};base64,${result.audioBase64}`
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : '试听合成失败'
-  } finally {
-    previewBusy.value = false
-  }
 }
 
 async function handleTestConnection(): Promise<void> {
@@ -122,7 +106,7 @@ async function handleTestConnection(): Promise<void> {
   error.value = null
   try {
     testResult.value = await api.testRemoteConnection({
-      endpoint: draft.value.endpoint.trim(),
+      endpoint: draft.value.endpoint!.trim(),
       apiKey: draft.value.apiKey?.trim() || undefined,
       modelId: draft.value.modelId.trim() || 'default-remote',
     })
@@ -146,13 +130,11 @@ async function save(): Promise<void> {
     error.value = '模型 ID 不能为空'
     return
   }
-  saving.value = true
-  error.value = null
   try {
-    config.value = await api.saveRemoteConfig({
+    const saved = await runSave(async () => api.saveRemoteConfig({
       enabled: draft.value.enabled,
       providerId: draft.value.providerId,
-      endpoint: draft.value.endpoint.trim(),
+      endpoint: draft.value.endpoint!.trim(),
       apiKey: draft.value.apiKey?.trim() || undefined,
       modelId: draft.value.modelId.trim(),
       speakerId: draft.value.speakerId?.trim() || undefined,
@@ -165,15 +147,10 @@ async function save(): Promise<void> {
         : undefined,
       speedFactor: draft.value.speedFactor || undefined,
       settings: draft.value.settings ?? {},
-    })
-    savedFlash.value = true
-    setTimeout(() => {
-      savedFlash.value = false
-    }, 1600)
-  } catch (e) {
-    error.value = e instanceof Error ? e.message : '保存在线语音配置失败'
-  } finally {
-    saving.value = false
+    }))
+    if (saved) config.value = saved
+  } catch {
+    // runSave 已把失败写成 error 文案；这里不再重复处理。
   }
 }
 </script>
